@@ -1,6 +1,7 @@
 use super::cursor::Cursor;
 use super::token::{Token, TokenKind};
 use crate::compiler::span::Span;
+use crate::error::{WrenError, WrenResult};
 
 /// Lexical analyser (tokeniser) for the Wren language.
 pub struct Lexer<'a> {
@@ -107,30 +108,139 @@ impl<'a> Lexer<'a> {
     /// When an iteration is done building a token, it must leave the cursor
     /// at the start of the next token's text. It may not finish leaving the
     /// cursor pointing into its own token.
-    pub fn next_token(&mut self) -> Token {
-        // Invariant: The lexer's cursor must be pointing to the
-        //            start of the remainder of the source to be consumed.
-        self.start_token();
+    pub fn next_token(&mut self) -> WrenResult<Token> {
+        use TokenKind as TK;
 
-        match self.cursor.current() {
-            _ if self.cursor.at_end() => {
-                // The source stream has run out, so we signal
-                // the caller by emitting an end-of-file token that
-                // doesn't exist in the text.
-                //
-                // The token's span thus points to the element
-                // beyond the end of the collection, and has 0 length.
-                self.start_pos = self.cursor.peek_offset();
-                self.make_token(TokenKind::EOF)
-            }
-            '(' => self.make_token(TokenKind::LeftParen),
-            ')' => self.make_token(TokenKind::RightParen),
-            '[' => self.make_token(TokenKind::LeftBracket),
-            ']' => self.make_token(TokenKind::RightBracket),
-            '{' => self.make_token(TokenKind::LeftBrace),
-            '}' => self.make_token(TokenKind::RightBrace),
-            _ => self.make_token(TokenKind::Error),
+        while !self.cursor.at_end() {
+            // Invariant: The lexer's cursor must be pointing to the
+            //            start of the remainder of the source to be consumed.
+            self.start_token();
+
+            let token = match self.cursor.current() {
+                '(' => self.make_token(TK::LeftParen),
+                ')' => self.make_token(TK::RightParen),
+                '[' => self.make_token(TK::LeftBracket),
+                ']' => self.make_token(TK::RightBracket),
+                '{' => self.make_token(TK::LeftBrace),
+                '}' => self.make_token(TK::RightBrace),
+                ':' => self.make_token(TK::Colon),
+                ',' => self.make_token(TK::Comma),
+                '*' => self.make_token(TK::Star),
+                '%' => self.make_token(TK::Star),
+                '#' => {
+                    // Ignore shebang on the first line.
+                    if self.cursor.line() == 1 && self.cursor.peek() == '!' && self.cursor.peek2() == '/' {
+                        self.skip_line();
+                        continue;
+                    }
+                    // Otherwise we treat it as a token
+                    self.make_token(TK::Hash)
+                }
+                '^' => self.make_token(TK::Caret),
+                '+' => self.make_token(TK::Plus),
+                '-' => self.make_token(TK::Minus),
+                '~' => self.make_token(TK::Tilde),
+                '?' => self.make_token(TK::Question),
+
+                // Two and three character tokens.
+                c1 => match [c1, self.cursor.peek(), self.cursor.peek2()] {
+                    ['|', '|', _] => self.make_token(TK::PipePipe),
+                    ['|', _, _] => self.make_token(TK::Pipe),
+                    ['.', '.', '.'] => self.make_token(TK::Ellipses),
+                    ['.', '.', _] => self.make_token(TK::DotDot),
+                    ['.', _, _] => self.make_token(TK::Dot),
+                    ['/', '/', _] => self.consume_line_comment(),
+                    ['/', '*', _] => {
+                        self.skip_block_comment();
+                        continue;
+                    }
+
+                    _ => self.make_token(TK::Error),
+                },
+            };
+
+            return Ok(token);
         }
+
+        // The source stream has run out, so we signal
+        // the caller by emitting an end-of-file token that
+        // doesn't exist in the text.
+        //
+        // The token's span thus points to the element
+        // beyond the end of the collection, and has 0 length.
+        self.start_pos = self.cursor.peek_offset();
+        Ok(self.make_token(TK::EOF))
+    }
+}
+
+impl<'a> Lexer<'a> {
+    fn skip_whitespace(&mut self) {
+        debug_assert!(Self::is_whitespace(self.cursor.current()));
+    }
+
+    // Skips the rest of the current line.
+    fn skip_line(&mut self) {
+        while self.cursor.peek() != '\n' && !self.cursor.at_end() {
+            self.cursor.bump();
+        }
+    }
+
+    fn skip_block_comment(&mut self) -> WrenResult<()> {
+        debug_assert_eq!(self.cursor.current(), '/');
+        debug_assert_eq!(self.cursor.peek(), '*');
+
+        self.cursor.bump();
+        self.cursor.bump();
+
+        let mut nesting = 1;
+        while nesting > 0 {
+            match [self.cursor.current(), self.cursor.peek()] {
+                ['\0', _] => return Err(WrenError::new_compile("Unterminated block comment")),
+                ['/', '*'] => {
+                    self.cursor.bump();
+                    self.cursor.bump();
+                    nesting += 1;
+                }
+                ['*', '/'] => {
+                    self.cursor.bump();
+                    self.cursor.bump();
+                    nesting += 1;
+                }
+                _ => {
+                    self.cursor.bump();
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn consume_line_comment(&mut self) -> Token {
+        debug_assert_eq!(self.cursor.current(), '/');
+        debug_assert_eq!(self.cursor.peek(), '/');
+
+        while self.cursor.peek() != '\n' && !self.cursor.at_end() {
+            self.cursor.bump();
+        }
+
+        self.make_token(TokenKind::Comment)
+    }
+}
+
+impl<'a> Lexer<'a> {
+    /// Test whether the character is considered whitespace
+    /// that should be ignored by the parser later.
+    ///
+    /// Doesn't include newline characters, because in Wren
+    /// newlines are significant, specifying end-of-statement.
+    fn is_whitespace(c: char) -> bool {
+        matches!(
+            c,
+            '\u{0020}' // space
+            | '\u{0009}' // tab
+            | '\u{00A0}' // no-break space
+            | '\u{FEFF}' // zero width no-break space
+        )
     }
 }
 
@@ -162,7 +272,7 @@ impl<'a> Iterator for LexerIter<'a> {
                 None
             } else {
                 self.done = true;
-                Some(self.lexer.next_token())
+                self.lexer.next_token()
             }
         } else {
             Some(self.lexer.next_token())

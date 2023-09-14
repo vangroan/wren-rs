@@ -2,6 +2,7 @@
 use std::str::CharIndices;
 
 pub(crate) const EOF_CHAR: char = '\0';
+pub(crate) const NEWLINE: char = '\n';
 
 /// Controls the position in source code while scanning.
 pub(crate) struct Cursor<'a> {
@@ -11,6 +12,8 @@ pub(crate) struct Cursor<'a> {
     /// Store the result of the previous iteration so it's
     /// available on demand as the "current" state of the cursor.
     prev: (u32, char),
+    /// Count the encountered lines.
+    line: u32,
     /// Original size of source passed in.
     orig_size: u32,
 }
@@ -21,8 +24,13 @@ impl<'a> Cursor<'a> {
         Cursor {
             chars: source.char_indices(),
             prev: (0, EOF_CHAR),
+            line: 0,
             orig_size: source.len() as u32,
         }
+    }
+
+    pub(crate) fn line(&self) -> u32 {
+        self.line
     }
 
     /// Byte offset of the current character.
@@ -94,6 +102,9 @@ impl<'a> Cursor<'a> {
                 // tuple fits into 64-bits.
                 let i = i as u32;
                 self.prev = (i, c);
+                if c == NEWLINE {
+                    self.line += 1;
+                }
                 Some((i, c))
             }
             None => {
