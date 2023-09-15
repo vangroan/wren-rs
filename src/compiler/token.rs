@@ -64,10 +64,13 @@ pub enum TokenKind {
 
     /// Either a single line comment, or a whole block comment.
     Comment,
+    /// This implementation has special support for document comments,
+    /// which is not in the reference Wren implementation.
+    DocComment,
 
     Newline,
     Error,
-    EOF,
+    End,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

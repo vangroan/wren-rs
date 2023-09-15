@@ -1,6 +1,7 @@
 //! Token stream.
 use std::slice::SliceIndex;
 
+use crate::error::WrenResult;
 use itertools::{multipeek, MultiPeek};
 
 use super::lexer::{Lexer, LexerIter};
@@ -51,7 +52,7 @@ impl<'a> TokenStream<'a> {
     /// Consumes the current token regardless of type.
     ///
     /// Returns `None` when the cursor is at the end of the token stream.
-    pub fn next_token(&mut self) -> Option<Token> {
+    pub fn next_token(&mut self) -> Option<WrenResult<Token>> {
         self.lexer.next()
     }
 

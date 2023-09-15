@@ -33,4 +33,6 @@ impl<'a> WrenCompiler<'a> {
             enclosing_class: None,
         }
     }
+
+    pub fn compile(&mut self) {}
 }
