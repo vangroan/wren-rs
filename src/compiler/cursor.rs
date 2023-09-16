@@ -103,8 +103,9 @@ impl<'src> Cursor<'src> {
 
     /// Indicates whether the cursor is at the end of the source.
     pub fn at_end(&self) -> bool {
-        let mut chars = self.chars.clone();
-        chars.next().is_none()
+        // let mut chars = self.chars.clone();
+        // chars.next().is_none()
+        self.prev.is_none()
     }
 
     /// Advances the cursor to the next character.
@@ -142,6 +143,11 @@ impl<'src> Cursor<'src> {
         } else {
             false
         }
+    }
+
+    pub fn with_bump(mut self) -> Self {
+        self.bump();
+        self
     }
 }
 
@@ -182,8 +188,8 @@ mod test {
 
     #[test]
     fn test_eof() {
-        assert_eq!(Cursor::from_str("").at_end(), true);
-        assert_eq!(Cursor::from_str("abc").at_end(), false);
+        assert_eq!(Cursor::from_str("").with_bump().at_end(), true);
+        assert_eq!(Cursor::from_str("abc").with_bump().at_end(), false);
 
         // Exhausted cursor must return EOF
         let mut cursor = Cursor::from_str("a");

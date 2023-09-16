@@ -4,6 +4,8 @@ use crate::compiler::token::TokenKind;
 
 #[test]
 fn test_line_comment() {
+    env_logger::init();
+
     let mut lexer = Lexer::from_source(
         r"
         //--------
@@ -11,8 +13,14 @@ fn test_line_comment() {
     );
 
     assert_eq!(lexer.next_token_tuple(), (Span::new(0, 1), TokenKind::Newline));
-
     assert_eq!(lexer.next_token_tuple(), (Span::new(9, 11), TokenKind::Comment));
+}
+
+#[test]
+fn test_line_comment_eof() {
+    let mut lexer = Lexer::from_source(r"//--------");
+
+    assert_eq!(lexer.next_token_tuple(), (Span::new(0, 10), TokenKind::Comment));
 }
 
 #[test]

@@ -1,6 +1,8 @@
 //! Token types outputted by lexing.
 
 use super::span::Span;
+use std::fmt;
+use std::fmt::Formatter;
 
 #[derive(Debug)]
 pub struct Token {

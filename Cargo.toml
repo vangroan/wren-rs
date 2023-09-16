@@ -7,6 +7,9 @@ edition = "2021"
 [lib]
 name = "wren"
 
+[dev-dependencies]
+env_logger = "0.10"
+
 [dependencies]
 anyhow = "1.0"
 itertools = "0.11"

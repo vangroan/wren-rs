@@ -1,9 +1,8 @@
 //! Error type.
 use std::fmt::{self, Display, Formatter};
 
-use crate::compiler::Span;
-
 pub type WrenResult<T> = Result<T, WrenError>;
+pub type ParseResult<T> = Result<T, ParseError>;
 
 pub fn parse_error(parse_error: ParseError) -> WrenError {
     WrenError {

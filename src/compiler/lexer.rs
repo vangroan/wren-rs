@@ -1,7 +1,7 @@
 use super::cursor::Cursor;
 use super::token::{Token, TokenKind};
 use crate::compiler::span::Span;
-use crate::error::{ParseError, WrenResult};
+use crate::error::{ParseError, ParseResult, WrenResult};
 
 // Errors:
 //
@@ -74,13 +74,11 @@ impl<'src> Lexer<'src> {
     fn make_token(&mut self, kind: TokenKind) -> Token {
         let start = self.start_pos;
 
-        // The lexer is expected to have consumed character including
+        // The lexer is expected to have consumed its characters including
         // the final character that must be part of this token.
         //
-        // The ending of the span must thus be one character after.
-        //
-        // We peek the next position to measure the final character's byte width.
-        let end = self.cursor.peek_position();
+        // The ending of the span is thus one character after the last.
+        let end = self.cursor.position();
 
         // start and end can be equal, and a token can have 0 size.
         debug_assert!(start <= end);
@@ -93,6 +91,10 @@ impl<'src> Lexer<'src> {
             span: Span { pos: start, size },
             kind,
         };
+
+        if cfg!(feature = "trace_lexer") {
+            log::trace!("{start:>4}:{end:<6}{kind:?} ({size})")
+        }
 
         token
     }
@@ -118,7 +120,7 @@ impl<'src> Lexer<'src> {
 
         while let Some((idx, ch)) = self.cursor.current() {
             if cfg!(feature = "trace_lexer") {
-                log::trace!("next_token current: ({idx}, {ch})");
+                log::trace!("char: ({idx}, {ch})");
             }
 
             // Invariant: The lexer's cursor must be pointing to the
@@ -128,40 +130,40 @@ impl<'src> Lexer<'src> {
             #[rustfmt::skip]
                 let result = match ch {
                 // TODO: Ignore BOM
-                '(' => Ok(self.make_token(TK::LeftParen)),
-                ')' => Ok(self.make_token(TK::RightParen)),
-                '[' => Ok(self.make_token(TK::LeftBracket)),
-                ']' => Ok(self.make_token(TK::RightBracket)),
-                '{' => Ok(self.make_token(TK::LeftBrace)),
-                '}' => Ok(self.make_token(TK::RightBrace)),
-                ':' => Ok(self.make_token(TK::Colon)),
-                ',' => Ok(self.make_token(TK::Comma)),
-                '*' => Ok(self.make_token(TK::Star)),
-                '%' => Ok(self.make_token(TK::Star)),
+                '(' => self.one_char_token(TK::LeftParen),
+                ')' => self.one_char_token(TK::RightParen),
+                '[' => self.one_char_token(TK::LeftBracket),
+                ']' => self.one_char_token(TK::RightBracket),
+                '{' => self.one_char_token(TK::LeftBrace),
+                '}' => self.one_char_token(TK::RightBrace),
+                ':' => self.one_char_token(TK::Colon),
+                ',' => self.one_char_token(TK::Comma),
+                '*' => self.one_char_token(TK::Star),
+                '%' => self.one_char_token(TK::Star),
                 '#' => {
                     // Ignore shebang on the first line.
                     if self.skip_shebang() {
                         continue;
                     }
                     // Otherwise we treat it as a token
-                    Ok(self.make_token(TK::Hash))
+                    self.one_char_token(TK::Hash)
                 }
-                '^' => Ok(self.make_token(TK::Caret)),
-                '+' => Ok(self.make_token(TK::Plus)),
-                '-' => Ok(self.make_token(TK::Minus)),
-                '~' => Ok(self.make_token(TK::Tilde)),
-                '?' => Ok(self.make_token(TK::Question)),
+                '^' => self.one_char_token(TK::Caret),
+                '+' => self.one_char_token(TK::Plus),
+                '-' => self.one_char_token(TK::Minus),
+                '~' => self.one_char_token(TK::Tilde),
+                '?' => self.one_char_token(TK::Question),
 
-                '|' => Ok(self.two_char_token('|', TK::PipePipe, TK::Pipe)),
-                '&' => Ok(self.two_char_token('&', TK::AmpAmp, TK::Amp)),
-                '=' => Ok(self.two_char_token('=', TK::EqEq, TK::Eq)),
-                '!' => Ok(self.two_char_token('=', TK::BangEq, TK::Bang)),
+                '|' => self.two_char_token('|', TK::PipePipe, TK::Pipe),
+                '&' => self.two_char_token('&', TK::AmpAmp, TK::Amp),
+                '=' => self.two_char_token('=', TK::EqEq, TK::Eq),
+                '!' => self.two_char_token('=', TK::BangEq, TK::Bang),
 
                 '.' => {
                     if self.cursor.peek() == '.' {
-                        Ok(self.two_char_token('.', TK::Ellipses, TK::DotDot))
+                        self.two_char_token('.', TK::Ellipses, TK::DotDot)
                     } else {
-                        Ok(self.make_token(TK::Dot))
+                        self.one_char_token(TK::Dot)
                     }
                 }
 
@@ -175,11 +177,11 @@ impl<'src> Lexer<'src> {
                             }
                         }
                         '*' => self.consume_block_comment(),
-                        _ => Ok(self.make_token(TK::Slash)),
+                        _ => self.one_char_token(TK::Slash),
                     }
                 }
 
-                '\n' => Ok(self.make_token(TK::Newline)),
+                '\n' => self.one_char_token(TK::Newline),
 
                 ch if ch.is_whitespace() => {
                     self.cursor.bump();
@@ -196,11 +198,6 @@ impl<'src> Lexer<'src> {
                 }
             };
 
-            // Position the cursor at the starting character for the
-            // next token, so the lexer's internal state is primed
-            // for the next iteration.
-            self.cursor.bump();
-
             return Ok(token);
         }
 
@@ -210,7 +207,6 @@ impl<'src> Lexer<'src> {
         //
         // The token's span thus points to the element
         // beyond the end of the collection, and has 0 length.
-        // self.start_pos = self.cursor.peek_offset();
         Ok(Token {
             span: Span::empty(self.cursor.position()),
             kind: TokenKind::End,
@@ -232,7 +228,7 @@ impl<'src> Lexer<'src> {
 
 impl<'a> Lexer<'a> {
     /// Consume one character for to create a token.
-    fn one_char_token(&mut self, kind: TokenKind) -> WrenResult<Token> {
+    fn one_char_token(&mut self, kind: TokenKind) -> ParseResult<Token> {
         self.cursor.bump();
         Ok(self.make_token(kind))
     }
@@ -242,12 +238,14 @@ impl<'a> Lexer<'a> {
     ///
     /// The signature of this function is meant to resemble the similar function
     /// in the original C codebase of Wren.
-    fn two_char_token(&mut self, check: char, two: TokenKind, one: TokenKind) -> Token {
+    fn two_char_token(&mut self, check: char, two: TokenKind, one: TokenKind) -> ParseResult<Token> {
         if self.cursor.peek() == check {
             self.cursor.bump();
-            self.make_token(two)
+            self.cursor.bump();
+            Ok(self.make_token(two))
         } else {
-            self.make_token(one)
+            self.cursor.bump();
+            Ok(self.make_token(one))
         }
     }
 
@@ -262,7 +260,6 @@ impl<'a> Lexer<'a> {
         // Ignore shebang on the first line.
         if self.cursor.at_start() && self.cursor.rest().starts_with("#!") {
             self.consume_line();
-            self.cursor.bump(); // leave at start of next token
             self.start_token();
             true
         } else {
@@ -273,16 +270,16 @@ impl<'a> Lexer<'a> {
     /// Consume the rest of the line, including the trailing `\r` and `\n`.
     fn consume_line(&mut self) {
         while !self.cursor.at_end() {
-            if self.cursor.char() == '\n' {
-                // This function might be called with an empty line,
-                // so we must first check the current character for newline.
+            // This function might be called with an empty line,
+            // so we must first check the current character for newline.
+            if self.cursor.match_bump('\n') {
                 break;
             }
             self.cursor.bump();
         }
     }
 
-    fn consume_block_comment(&mut self) -> Result<Token, ParseError> {
+    fn consume_block_comment(&mut self) -> ParseResult<Token> {
         debug_assert!(self.cursor.rest().starts_with("/*"));
 
         self.cursor.bump();
@@ -298,7 +295,7 @@ impl<'a> Lexer<'a> {
                 }
                 ('*', '/') => {
                     self.cursor.bump();
-                    // self.cursor.bump();
+                    self.cursor.bump();
                     nesting -= 1;
                 }
                 ('\0', _) => {
@@ -345,9 +342,10 @@ impl<'a> Lexer<'a> {
     // }
 
     /// Consume a line comment starting with '//'.
-    fn consume_line_comment(&mut self) -> Result<Token, ParseError> {
+    fn consume_line_comment(&mut self) -> ParseResult<Token> {
         debug_assert!(self.cursor.rest().starts_with("//"));
         self.consume_line();
+        println!("consume_line_comment position:{}", self.cursor.position());
         Ok(self.make_token(TokenKind::Comment))
     }
 
@@ -427,5 +425,13 @@ mod test {
         assert_eq!(lexer.next_token_tuple(), (Span::new(4, 1), TK::RightBrace));
         assert_eq!(lexer.next_token_tuple(), (Span::new(5, 1), TK::RightParen));
         assert_eq!(lexer.next_token_tuple(), (Span::new(6, 0), TK::End));
+    }
+
+    #[test]
+    fn test_consume_line() {
+        let mut lexer = Lexer::from_source("   \n   \n");
+
+        assert_eq!(lexer.next_token_tuple(), (Span::new(3, 1), TK::Newline));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(7, 1), TK::Newline));
     }
 }
