@@ -17,3 +17,5 @@ serde = { version = "1.0", optional = true }
 default = []
 
 serde = ["dep:serde"]
+
+trace_lexer = []

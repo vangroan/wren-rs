@@ -64,6 +64,7 @@ pub enum TokenKind {
 
     /// Either a single line comment, or a whole block comment.
     Comment,
+    BlockComment,
     /// This implementation has special support for document comments,
     /// which is not in the reference Wren implementation.
     DocComment,

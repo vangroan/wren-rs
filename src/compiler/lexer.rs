@@ -1,9 +1,7 @@
 use super::cursor::Cursor;
 use super::token::{Token, TokenKind};
 use crate::compiler::span::Span;
-use crate::error::{parse_error, ErrorKind, ParseError, WrenError, WrenResult};
-use std::str::CharIndices;
-use std::string;
+use crate::error::{ParseError, WrenResult};
 
 // Errors:
 //
@@ -26,13 +24,6 @@ pub struct Lexer<'src> {
     /// Allows for character look ahead, and keeps track of the UTF-8
     /// character byte positions.
     cursor: Cursor<'src>,
-    /// Remaining source code text.
-    /// The start of the string slice is the next character to be lexed.
-    /// It represents the cursor of tokenising loop, with the 0 index
-    /// constantly moving back. It shouldn't be used to determine a
-    /// token's span, or extract a token text using a span. Spans
-    /// are relative to the original source code.
-    rest: &'src str,
     /// Starting absolute byte position of the current token
     /// in the source.
     start_pos: usize,
@@ -54,11 +45,7 @@ impl<'src> Lexer<'src> {
         // initial byte position is. It's probably 0.
         let start_pos = cursor.position();
 
-        Lexer {
-            rest: source,
-            cursor,
-            start_pos,
-        }
+        Lexer { cursor, start_pos }
     }
 
     /// The original source code that was passed into the lexer.
@@ -77,9 +64,9 @@ impl<'src> Lexer<'src> {
     /// Note that source can contain '\0' (end-of-file) characters,
     /// but not be at the actual end. It's thus important to verify
     /// with this function whenever a [`TokenKind::End`] is encountered.
-    pub fn at_end(&self) -> bool {
-        self.rest.is_empty()
-    }
+    // pub fn at_end(&self) -> bool {
+    //     self.rest.is_empty()
+    // }
 
     /// Build a token, using the source text from the position
     /// stored by [`start_token`](struct.Lexer.html#fn-start_token) to the
@@ -110,20 +97,6 @@ impl<'src> Lexer<'src> {
         token
     }
 
-    /// Helper function for creating a two character token, by peeking
-    /// at the next character and comparing it to the given `check`.
-    ///
-    /// The signature of this function is meant to resemble the similar function
-    /// in the original C codebase of Wren.
-    fn two_char_token(&mut self, check: char, two: TokenKind, one: TokenKind) -> Token {
-        if self.cursor.peek() == check {
-            self.cursor.bump();
-            self.make_token(two)
-        } else {
-            self.make_token(one)
-        }
-    }
-
     /// Scan the source characters and construct the next token.
     ///
     /// ## Implementation
@@ -144,12 +117,16 @@ impl<'src> Lexer<'src> {
         use TokenKind as TK;
 
         while let Some((idx, ch)) = self.cursor.current() {
+            if cfg!(feature = "trace_lexer") {
+                log::trace!("next_token current: ({idx}, {ch})");
+            }
+
             // Invariant: The lexer's cursor must be pointing to the
             //            start of the remainder of the source to be consumed.
             self.start_token();
 
             #[rustfmt::skip]
-            let result = match ch {
+                let result = match ch {
                 // TODO: Ignore BOM
                 '(' => Ok(self.make_token(TK::LeftParen)),
                 ')' => Ok(self.make_token(TK::RightParen)),
@@ -196,7 +173,7 @@ impl<'src> Lexer<'src> {
                             } else {
                                 self.consume_line_comment()
                             }
-                        },
+                        }
                         '*' => self.consume_block_comment(),
                         _ => Ok(self.make_token(TK::Slash)),
                     }
@@ -254,6 +231,26 @@ impl<'src> Lexer<'src> {
 }
 
 impl<'a> Lexer<'a> {
+    /// Consume one character for to create a token.
+    fn one_char_token(&mut self, kind: TokenKind) -> WrenResult<Token> {
+        self.cursor.bump();
+        Ok(self.make_token(kind))
+    }
+
+    /// Helper function for creating a two character token, by peeking
+    /// at the next character and comparing it to the given `check`.
+    ///
+    /// The signature of this function is meant to resemble the similar function
+    /// in the original C codebase of Wren.
+    fn two_char_token(&mut self, check: char, two: TokenKind, one: TokenKind) -> Token {
+        if self.cursor.peek() == check {
+            self.cursor.bump();
+            self.make_token(two)
+        } else {
+            self.make_token(one)
+        }
+    }
+
     /// Skips over a shebang line at the start of the input.
     ///
     /// This is used on Unix systems where the first line
@@ -263,16 +260,17 @@ impl<'a> Lexer<'a> {
     /// Returns `true` if the shebang is detected, otherwise `false`.
     fn skip_shebang(&mut self) -> bool {
         // Ignore shebang on the first line.
-        // if self.at_start() && self.rest.starts_with("#!") {
-        //     let pos = self.measure_line();
-        //     self.bump_offset(pos);
-        //     true
-        // } else {
-        //     false
-        // }
-        todo!()
+        if self.cursor.at_start() && self.cursor.rest().starts_with("#!") {
+            self.consume_line();
+            self.cursor.bump(); // leave at start of next token
+            self.start_token();
+            true
+        } else {
+            false
+        }
     }
 
+    /// Consume the rest of the line, including the trailing `\r` and `\n`.
     fn consume_line(&mut self) {
         while !self.cursor.at_end() {
             if self.cursor.char() == '\n' {
@@ -285,7 +283,34 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_block_comment(&mut self) -> Result<Token, ParseError> {
-        todo!()
+        debug_assert!(self.cursor.rest().starts_with("/*"));
+
+        self.cursor.bump();
+        self.cursor.bump();
+
+        let mut nesting = 1;
+        while nesting > 0 {
+            match (self.cursor.char(), self.cursor.peek()) {
+                ('/', '*') => {
+                    self.cursor.bump();
+                    self.cursor.bump();
+                    nesting += 1;
+                }
+                ('*', '/') => {
+                    self.cursor.bump();
+                    // self.cursor.bump();
+                    nesting -= 1;
+                }
+                ('\0', _) => {
+                    return Err(ParseError::UnterminatedBlockComment);
+                }
+                _ => {
+                    self.cursor.bump();
+                }
+            }
+        }
+
+        Ok(self.make_token(TokenKind::BlockComment))
     }
 
     // fn skip_block_comment(&mut self) {
@@ -321,7 +346,6 @@ impl<'a> Lexer<'a> {
 
     /// Consume a line comment starting with '//'.
     fn consume_line_comment(&mut self) -> Result<Token, ParseError> {
-        println!("star_pos: {}; rest: {}", self.start_pos, self.cursor.rest());
         debug_assert!(self.cursor.rest().starts_with("//"));
         self.consume_line();
         Ok(self.make_token(TokenKind::Comment))
@@ -386,7 +410,6 @@ impl<'a> Lexer<'a> {
 //         }
 //     }
 // }
-
 #[cfg(test)]
 mod test {
     use super::*;

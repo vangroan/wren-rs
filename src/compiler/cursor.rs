@@ -37,6 +37,8 @@ impl<'src> Cursor<'src> {
         self.source
     }
 
+    /// Remaining source text to be consumed. Starting at the
+    /// current position.
     pub fn rest(&self) -> &'src str {
         &self.source[self.position()..]
     }
@@ -89,6 +91,14 @@ impl<'src> Cursor<'src> {
         // advancing the iterator.
         let mut chars = self.chars.clone();
         chars.next().map(|(i, _)| i).unwrap_or_else(|| self.source.len())
+    }
+
+    /// Indicates whether the cursor is at the start of the source.
+    pub fn at_start(&self) -> bool {
+        match self.prev {
+            Some((i, _)) => i == 0,
+            None => false, // at end
+        }
     }
 
     /// Indicates whether the cursor is at the end of the source.
