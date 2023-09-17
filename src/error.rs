@@ -24,10 +24,12 @@ pub enum ErrorKind {
 
 #[derive(Debug)]
 pub enum ParseError {
-    /// Invalid source code character.
-    InvalidCharacter(char),
     /// Invalid source code byte.
     InvalidByte(char),
+    /// Invalid source code character.
+    InvalidCharacter(char),
+    /// Invalid keyword identifier.
+    InvalidKeyword,
     /// Unterminated block comment.
     UnterminatedBlockComment,
     /// Unexpected character.
@@ -51,8 +53,9 @@ impl Display for WrenError {
 
         match &self.kind {
             EK::Parse(err) => match err {
-                PE::InvalidCharacter(ch) => write!(f, "invalid character '{ch}'"),
                 PE::InvalidByte(ch) => write!(f, "invalid byte {}", ch.escape_default()),
+                PE::InvalidCharacter(ch) => write!(f, "invalid character '{ch}'"),
+                PE::InvalidKeyword => write!(f, "invalid keyword"),
                 PE::UnterminatedBlockComment => write!(f, "unterminated block comment"),
                 PE::UnexpectedChar => write!(f, "unexpected character"),
                 PE::UnexpectedEOF => write!(f, "unexpected end-of-file"),

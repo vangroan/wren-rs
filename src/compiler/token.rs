@@ -1,8 +1,7 @@
 //! Token types outputted by lexing.
 
 use super::span::Span;
-use std::fmt;
-use std::fmt::Formatter;
+use crate::error::ParseError;
 
 #[derive(Debug)]
 pub struct Token {
@@ -113,5 +112,36 @@ impl Token {
     pub fn to_tuple(self) -> (Span, TokenKind) {
         let Self { span, kind } = self;
         (span, kind)
+    }
+}
+
+impl TryFrom<&str> for KeywordKind {
+    type Error = ParseError;
+
+    #[rustfmt::skip]
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "break"     => Ok(Self::Break),
+            "continue"  => Ok(Self::Continue),
+            "class"     => Ok(Self::Class),
+            "construct" => Ok(Self::Construct),
+            "else"      => Ok(Self::Else),
+            "false"     => Ok(Self::False),
+            "for"       => Ok(Self::For),
+            "foreign"   => Ok(Self::Foreign),
+            "if"        => Ok(Self::If),
+            "import"    => Ok(Self::Import),
+            "as"        => Ok(Self::As),
+            "is"        => Ok(Self::Is),
+            "null"      => Ok(Self::Null),
+            "return"    => Ok(Self::Return),
+            "static"    => Ok(Self::Static),
+            "super"     => Ok(Self::Super),
+            "this"      => Ok(Self::This),
+            "true"      => Ok(Self::True),
+            "var"       => Ok(Self::Var),
+            "while"     => Ok(Self::While),
+            _ => Err(ParseError::InvalidKeyword),
+        }
     }
 }

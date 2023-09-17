@@ -1,6 +1,7 @@
 use super::cursor::Cursor;
 use super::token::{Token, TokenKind};
 use crate::compiler::span::Span;
+use crate::compiler::token::KeywordKind;
 use crate::error::{ParseError, ParseResult, WrenResult};
 
 // Errors:
@@ -46,6 +47,13 @@ impl<'src> Lexer<'src> {
         let start_pos = cursor.position();
 
         Lexer { cursor, start_pos }
+    }
+
+    /// Slice the sourcecode according to the current token's span.
+    fn fragment(&self) -> &str {
+        let lo = self.start_pos;
+        let hi = self.cursor.position();
+        &self.cursor.source()[lo..hi]
     }
 
     /// The original source code that was passed into the lexer.
@@ -127,8 +135,7 @@ impl<'src> Lexer<'src> {
             //            start of the remainder of the source to be consumed.
             self.start_token();
 
-            #[rustfmt::skip]
-                let result = match ch {
+            let result = match ch {
                 // TODO: Ignore BOM
                 '(' => self.one_char_token(TK::LeftParen),
                 ')' => self.one_char_token(TK::RightParen),
@@ -167,19 +174,17 @@ impl<'src> Lexer<'src> {
                     }
                 }
 
-                '/' => {
-                    match self.cursor.peek() {
-                        '/' => {
-                            if self.cursor.peek2() == '/' {
-                                self.consume_doc_comment()
-                            } else {
-                                self.consume_line_comment()
-                            }
+                '/' => match self.cursor.peek() {
+                    '/' => {
+                        if self.cursor.peek2() == '/' {
+                            self.consume_doc_comment()
+                        } else {
+                            self.consume_line_comment()
                         }
-                        '*' => self.consume_block_comment(),
-                        _ => self.one_char_token(TK::Slash),
                     }
-                }
+                    '*' => self.consume_block_comment(),
+                    _ => self.one_char_token(TK::Slash),
+                },
 
                 '\n' => self.one_char_token(TK::Newline),
 
@@ -198,15 +203,11 @@ impl<'src> Lexer<'src> {
                     }
                 }
 
-                '_' => {
-                    self.consume_name(
-                        if self.cursor.peek() == '_' {
-                            TK::StaticField
-                        } else {
-                            TK::Field
-                        }
-                    )
-                }
+                '_' => self.consume_name(if self.cursor.peek() == '_' {
+                    TK::StaticField
+                } else {
+                    TK::Field
+                }),
 
                 '0' => {
                     if self.cursor.peek() == '0' {
@@ -216,15 +217,12 @@ impl<'src> Lexer<'src> {
                     }
                 }
 
-                ch if ch.is_ascii_alphabetic() => {
-                    self.consume_name(TK::Name)
-                }
+                ch if ch.is_ascii_alphabetic() => self.consume_name(TK::Name),
 
-                ch if ch.is_ascii_digit() => {
-                    self.consume_number()
-                }
+                ch if ch.is_ascii_digit() => self.consume_number(),
 
                 _ => {
+                    self.cursor.bump();
                     if matches!(ch, '\x20'..='\x7E') {
                         Err(ParseError::InvalidCharacter(ch))
                     } else {
@@ -376,7 +374,25 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_name(&mut self, kind: TokenKind) -> ParseResult<Token> {
-        todo!()
+        debug_assert!(
+            self.cursor.char().is_ascii_alphabetic()
+                || self.cursor.rest().starts_with("_")
+                || self.cursor.rest().starts_with("__")
+        );
+
+        while !self.cursor.at_end() {
+            let ch = self.cursor.char();
+            if ch.is_ascii_alphabetic() || ch.is_ascii_digit() || ch == '_' {
+                self.cursor.bump();
+            } else {
+                break;
+            }
+        }
+
+        match KeywordKind::try_from(self.fragment()) {
+            Ok(kw) => Ok(self.make_token(TokenKind::Keyword(kw))),
+            Err(_) => Ok(self.make_token(kind)),
+        }
     }
 
     fn consume_hex_number(&mut self) -> ParseResult<Token> {
@@ -427,7 +443,8 @@ impl<'a> Lexer<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::compiler::token::TokenKind as TK;
+    use crate::compiler::span::Span;
+    use crate::compiler::token::{KeywordKind as KW, TokenKind as TK};
 
     #[test]
     #[rustfmt::skip]
@@ -449,5 +466,67 @@ mod test {
 
         assert_eq!(lexer.next_token_tuple(), (Span::new(3, 1), TK::Newline));
         assert_eq!(lexer.next_token_tuple(), (Span::new(7, 1), TK::Newline));
+    }
+
+    #[test]
+    fn test_line_comment() {
+        env_logger::init();
+
+        let mut lexer = Lexer::from_source(
+            r"
+        //--------
+        ",
+        );
+
+        assert_eq!(lexer.next_token_tuple(), (Span::new(0, 1), TokenKind::Newline));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(9, 11), TokenKind::Comment));
+    }
+
+    #[test]
+    fn test_line_comment_eof() {
+        let mut lexer = Lexer::from_source(r"//--------");
+
+        assert_eq!(lexer.next_token_tuple(), (Span::new(0, 10), TokenKind::Comment));
+    }
+
+    #[test]
+    fn test_block_comment() {
+        let mut lexer = Lexer::from_source(
+            r#"
+        /* ----------
+         * -        -
+         * ---------- */
+        "#,
+        );
+
+        assert_eq!(lexer.next_token_tuple(), (Span::new(0, 1), TokenKind::Newline));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(9, 60), TokenKind::BlockComment));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(69, 1), TokenKind::Newline));
+    }
+
+    #[test]
+    fn test_nested_block_comment() {
+        let mut lexer = Lexer::from_source(r"/* /* /* */ */ */ //-");
+
+        assert_eq!(lexer.next_token_tuple(), (Span::new(0, 17), TokenKind::BlockComment));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(18, 3), TokenKind::Comment));
+    }
+
+    #[test]
+    fn test_shebang_skip() {
+        let mut lexer = Lexer::from_source(include_str!("test/test_shebang.wren"));
+
+        assert_eq!(lexer.next_token_tuple(), (Span::new(18, 4), TokenKind::Comment));
+    }
+
+    #[test]
+    fn test_keyword_identifier() {
+        let mut lexer = Lexer::from_source(
+            "break continue class construct else false for foreign if import as is null return static super this true var while"
+        );
+
+        assert_eq!(lexer.next_token_tuple(), (Span::new(0, 5), TK::Keyword(KW::Break)));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(6, 8), TK::Keyword(KW::Continue)));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(15, 5), TK::Keyword(KW::Class)));
     }
 }
