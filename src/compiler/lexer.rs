@@ -183,12 +183,56 @@ impl<'src> Lexer<'src> {
 
                 '\n' => self.one_char_token(TK::Newline),
 
+                // Whitespace must be tested after newline, which
+                // is the end-of-statement character.
                 ch if ch.is_whitespace() => {
                     self.cursor.bump();
                     continue;
                 }
 
-                _ => Err(ParseError::UnexpectedChar),
+                '"' => {
+                    if self.cursor.rest().starts_with(r#"""""#) {
+                        self.consume_raw_string()
+                    } else {
+                        self.consume_string()
+                    }
+                }
+
+                '_' => {
+                    self.consume_name(
+                        if self.cursor.peek() == '_' {
+                            TK::StaticField
+                        } else {
+                            TK::Field
+                        }
+                    )
+                }
+
+                '0' => {
+                    if self.cursor.peek() == '0' {
+                        self.consume_hex_number()
+                    } else {
+                        self.consume_number()
+                    }
+                }
+
+                ch if ch.is_ascii_alphabetic() => {
+                    self.consume_name(TK::Name)
+                }
+
+                ch if ch.is_ascii_digit() => {
+                    self.consume_number()
+                }
+
+                _ => {
+                    if matches!(ch, '\x20'..='\x7E') {
+                        Err(ParseError::InvalidCharacter(ch))
+                    } else {
+                        // NOTE: The reference Wren implementation processes raw bytes, but
+                        // we use Rust's UTF-8 encoded string.
+                        Err(ParseError::InvalidByte(ch))
+                    }
+                }
             };
 
             let token = match result {
@@ -227,7 +271,7 @@ impl<'src> Lexer<'src> {
 }
 
 impl<'a> Lexer<'a> {
-    /// Consume one character for to create a token.
+    /// Consume one character to create a token.
     fn one_char_token(&mut self, kind: TokenKind) -> ParseResult<Token> {
         self.cursor.bump();
         Ok(self.make_token(kind))
@@ -310,42 +354,10 @@ impl<'a> Lexer<'a> {
         Ok(self.make_token(TokenKind::BlockComment))
     }
 
-    // fn skip_block_comment(&mut self) {
-    //     debug_assert_eq!(self.cursor.current(), '/');
-    //     debug_assert_eq!(self.cursor.peek(), '*');
-    //
-    //     self.cursor.bump();
-    //     self.cursor.bump();
-    //
-    //     let mut nesting = 1;
-    //     while nesting > 0 {
-    //         match [self.cursor.current(), self.cursor.peek()] {
-    //             ['\0', _] => {
-    //                 self.lex_error("Unterminated block comment.");
-    //                 return;
-    //             }
-    //             ['/', '*'] => {
-    //                 self.cursor.bump();
-    //                 self.cursor.bump();
-    //                 nesting += 1;
-    //             }
-    //             ['*', '/'] => {
-    //                 self.cursor.bump();
-    //                 self.cursor.bump();
-    //                 nesting += 1;
-    //             }
-    //             _ => {
-    //                 self.cursor.bump();
-    //             }
-    //         }
-    //     }
-    // }
-
     /// Consume a line comment starting with '//'.
     fn consume_line_comment(&mut self) -> ParseResult<Token> {
         debug_assert!(self.cursor.rest().starts_with("//"));
         self.consume_line();
-        println!("consume_line_comment position:{}", self.cursor.position());
         Ok(self.make_token(TokenKind::Comment))
     }
 
@@ -354,24 +366,28 @@ impl<'a> Lexer<'a> {
         self.consume_line();
         Ok(self.make_token(TokenKind::DocComment))
     }
-}
 
-impl<'a> Lexer<'a> {
-    /// Test whether the character is considered whitespace
-    /// that should be ignored by the parser later.
-    ///
-    /// Doesn't include newline characters, because in Wren
-    /// newlines are significant, specifying end-of-statement.
-    fn is_whitespace(c: char) -> bool {
-        matches!(
-            c,
-            '\u{0020}' // space
-            | '\u{0009}' // tab
-            | '\u{00A0}' // no-break space
-            | '\u{FEFF}' // zero width no-break space
-        )
+    fn consume_string(&mut self) -> ParseResult<Token> {
+        todo!()
+    }
+
+    fn consume_raw_string(&mut self) -> ParseResult<Token> {
+        todo!()
+    }
+
+    fn consume_name(&mut self, kind: TokenKind) -> ParseResult<Token> {
+        todo!()
+    }
+
+    fn consume_hex_number(&mut self) -> ParseResult<Token> {
+        todo!()
+    }
+
+    fn consume_number(&mut self) -> ParseResult<Token> {
+        todo!()
     }
 }
+
 //
 // impl<'a> IntoIterator for Lexer<'a> {
 //     type Item = WrenResult<Token>;

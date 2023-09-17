@@ -24,6 +24,10 @@ pub enum ErrorKind {
 
 #[derive(Debug)]
 pub enum ParseError {
+    /// Invalid source code character.
+    InvalidCharacter(char),
+    /// Invalid source code byte.
+    InvalidByte(char),
     /// Unterminated block comment.
     UnterminatedBlockComment,
     /// Unexpected character.
@@ -43,16 +47,18 @@ impl Display for WrenError {
             EK::Runtime => "runtime",
         };
 
-        let message = match &self.kind {
-            EK::Parse(err) => match err {
-                PE::UnterminatedBlockComment => "unterminated block comment",
-                PE::UnexpectedChar => "unexpected character",
-                PE::UnexpectedEOF => "unexpected end-of-file",
-            },
-            EK::Compile => "todo",
-            EK::Runtime => "todo",
-        };
+        write!(f, "{prefix} error: ")?;
 
-        write!(f, "{prefix} error: {message}")
+        match &self.kind {
+            EK::Parse(err) => match err {
+                PE::InvalidCharacter(ch) => write!(f, "invalid character '{ch}'"),
+                PE::InvalidByte(ch) => write!(f, "invalid byte {}", ch.escape_default()),
+                PE::UnterminatedBlockComment => write!(f, "unterminated block comment"),
+                PE::UnexpectedChar => write!(f, "unexpected character"),
+                PE::UnexpectedEOF => write!(f, "unexpected end-of-file"),
+            },
+            EK::Compile => write!(f, "todo"),
+            EK::Runtime => write!(f, "todo"),
+        }
     }
 }
