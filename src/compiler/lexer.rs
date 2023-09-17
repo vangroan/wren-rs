@@ -343,6 +343,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Consume a block comment surrounded by '/*' and '*/'.
     fn consume_block_comment(&mut self) -> ParseResult<Token> {
         debug_assert!(self.cursor.rest().starts_with("/*"));
 
@@ -381,20 +382,26 @@ impl<'a> Lexer<'a> {
         Ok(self.make_token(TokenKind::Comment))
     }
 
+    /// Consume a document comment starting with '///'
+    ///
+    /// Document comments are not a feature in the reference Wren implementation,
     fn consume_doc_comment(&mut self) -> Result<Token, ParseError> {
         debug_assert!(self.cursor.rest().starts_with("///"));
         self.consume_line();
         Ok(self.make_token(TokenKind::DocComment))
     }
 
+    /// Consume a string literal, surrounded by double-quotes.
     fn consume_string(&mut self) -> ParseResult<Token> {
         todo!()
     }
 
+    /// Consume a raw string literal, surrounded by three double-quotes '"""'.
     fn consume_raw_string(&mut self) -> ParseResult<Token> {
         todo!()
     }
 
+    /// Consume an identifier.
     fn consume_name(&mut self, kind: TokenKind) -> ParseResult<Token> {
         debug_assert!(
             self.cursor.char().is_ascii_alphabetic()
@@ -417,16 +424,26 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Consume a hexadecimal number literal.
     fn consume_hex_number(&mut self) -> ParseResult<Token> {
         todo!()
     }
 
+    /// Consume an integer, floating point or scientific number literal.
     fn consume_number(&mut self) -> ParseResult<Token> {
         debug_assert!(self.cursor.char().is_ascii_digit());
 
         self.cursor.bump(); // first char
 
         self.consume_digits();
+
+        // Check if the number has a floating point.
+        // Make sure a digit follows the dot so we don't
+        // get confused with method calls on number literals.
+        if self.cursor.char() == '.' && self.cursor.peek().is_ascii_digit() {
+            self.cursor.bump(); // .
+            self.consume_digits();
+        }
 
         // Scientific number
         if matches!(self.cursor.char(), 'e' | 'E') {
@@ -447,6 +464,7 @@ impl<'a> Lexer<'a> {
         self.make_number(false)
     }
 
+    /// Consume number digits until interrupted.
     fn consume_digits(&mut self) {
         while !self.cursor.at_end() {
             if self.cursor.char().is_ascii_digit() {

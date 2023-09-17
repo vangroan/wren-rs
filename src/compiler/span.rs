@@ -15,6 +15,10 @@ impl Span {
     pub fn new(pos: usize, size: usize) -> Self {
         Self { pos, size }
     }
+
+    pub fn end(&self) -> usize {
+        self.pos + self.size
+    }
 }
 
 impl Debug for Span {
