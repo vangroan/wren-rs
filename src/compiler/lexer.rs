@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use super::cursor::Cursor;
 use super::token::{Token, TokenKind};
 use crate::compiler::span::Span;
@@ -98,6 +100,7 @@ impl<'src> Lexer<'src> {
         let token = Token {
             span: Span { pos: start, size },
             kind,
+            num: 0.0,
         };
 
         if cfg!(feature = "trace_lexer") {
@@ -105,6 +108,24 @@ impl<'src> Lexer<'src> {
         }
 
         token
+    }
+
+    /// Make a new token, attempting to parse the current fragment into a number literal value.
+    fn make_number(&mut self, is_hex: bool) -> ParseResult<Token> {
+        let fragment = self.fragment();
+
+        let num = if is_hex {
+            i64::from_str_radix(fragment, 16)
+                .map(|n| n as f64)
+                .map_err(ParseError::ParseInt)?
+        } else {
+            f64::from_str(fragment).map_err(ParseError::ParseFloat)?
+        };
+
+        Ok(Token {
+            num,
+            ..self.make_token(TokenKind::Number)
+        })
     }
 
     /// Scan the source characters and construct the next token.
@@ -252,6 +273,7 @@ impl<'src> Lexer<'src> {
         Ok(Token {
             span: Span::empty(self.cursor.position()),
             kind: TokenKind::End,
+            num: 0.0,
         })
     }
 
@@ -400,7 +422,39 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_number(&mut self) -> ParseResult<Token> {
-        todo!()
+        debug_assert!(self.cursor.char().is_ascii_digit());
+
+        self.cursor.bump(); // first char
+
+        self.consume_digits();
+
+        // Scientific number
+        if matches!(self.cursor.char(), 'e' | 'E') {
+            self.cursor.bump();
+
+            // Allow a single positive/negative exponent symbol.
+            if matches!(self.cursor.char(), '+' | '-') {
+                self.cursor.bump();
+            }
+
+            if !self.cursor.char().is_ascii_digit() {
+                return Err(ParseError::UnterminatedScientificNotation);
+            }
+
+            self.consume_digits();
+        }
+
+        self.make_number(false)
+    }
+
+    fn consume_digits(&mut self) {
+        while !self.cursor.at_end() {
+            if self.cursor.char().is_ascii_digit() {
+                self.cursor.bump();
+            } else {
+                break;
+            }
+        }
     }
 }
 
@@ -470,8 +524,6 @@ mod test {
 
     #[test]
     fn test_line_comment() {
-        env_logger::init();
-
         let mut lexer = Lexer::from_source(
             r"
         //--------
@@ -528,5 +580,17 @@ mod test {
         assert_eq!(lexer.next_token_tuple(), (Span::new(0, 5), TK::Keyword(KW::Break)));
         assert_eq!(lexer.next_token_tuple(), (Span::new(6, 8), TK::Keyword(KW::Continue)));
         assert_eq!(lexer.next_token_tuple(), (Span::new(15, 5), TK::Keyword(KW::Class)));
+    }
+
+    #[test]
+    fn test_var_assign() {
+        let mut lexer = Lexer::from_source("var x = 1 + 2");
+
+        assert_eq!(lexer.next_token_tuple(), (Span::new(0, 3), TK::Keyword(KW::Var)));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(4, 1), TK::Name));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(6, 1), TK::Eq));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(8, 1), TK::Number));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(10, 1), TK::Plus));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(12, 1), TK::Number));
     }
 }

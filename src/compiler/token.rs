@@ -7,6 +7,7 @@ use crate::error::ParseError;
 pub struct Token {
     pub span: Span,
     pub kind: TokenKind,
+    pub num: f64,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -110,7 +111,7 @@ impl Token {
 
     /// Convenience util for converting the token to a tuple struct.
     pub fn to_tuple(self) -> (Span, TokenKind) {
-        let Self { span, kind } = self;
+        let Self { span, kind, .. } = self;
         (span, kind)
     }
 }

@@ -64,6 +64,10 @@ impl<'src> Cursor<'src> {
         self.prev.map(|(_, c)| c).unwrap_or(EOF_CHAR)
     }
 
+    pub fn try_char(&self) -> Option<char> {
+        self.prev.map(|(_, c)| c)
+    }
+
     pub fn current(&self) -> Option<(usize, char)> {
         self.prev
     }

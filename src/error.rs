@@ -1,5 +1,6 @@
 //! Error type.
 use std::fmt::{self, Display, Formatter};
+use std::num::{ParseFloatError, ParseIntError};
 
 pub type WrenResult<T> = Result<T, WrenError>;
 pub type ParseResult<T> = Result<T, ParseError>;
@@ -30,8 +31,14 @@ pub enum ParseError {
     InvalidCharacter(char),
     /// Invalid keyword identifier.
     InvalidKeyword,
+    /// Error parsing an integer number
+    ParseInt(ParseIntError),
+    /// Error parsing a floating point number
+    ParseFloat(ParseFloatError),
     /// Unterminated block comment.
     UnterminatedBlockComment,
+    /// Unterminated scientific notation.
+    UnterminatedScientificNotation,
     /// Unexpected character.
     UnexpectedChar,
     /// Unexpected end-of-file.
@@ -56,7 +63,10 @@ impl Display for WrenError {
                 PE::InvalidByte(ch) => write!(f, "invalid byte {}", ch.escape_default()),
                 PE::InvalidCharacter(ch) => write!(f, "invalid character '{ch}'"),
                 PE::InvalidKeyword => write!(f, "invalid keyword"),
+                PE::ParseInt(err) => err.fmt(f),
+                PE::ParseFloat(err) => err.fmt(f),
                 PE::UnterminatedBlockComment => write!(f, "unterminated block comment"),
+                PE::UnterminatedScientificNotation => write!(f, "unterminated scientific notation"),
                 PE::UnexpectedChar => write!(f, "unexpected character"),
                 PE::UnexpectedEOF => write!(f, "unexpected end-of-file"),
             },
