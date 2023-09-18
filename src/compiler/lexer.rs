@@ -115,6 +115,10 @@ impl<'src> Lexer<'src> {
         let fragment = self.fragment();
 
         let num = if is_hex {
+            // Our token fragment includes the '0x' prefix, which Rust's parser doesn't want.
+            debug_assert!(fragment.starts_with("0x"));
+            let fragment = &fragment[2..];
+
             i64::from_str_radix(fragment, 16)
                 .map(|n| n as f64)
                 .map_err(ParseError::ParseInt)?
@@ -231,7 +235,7 @@ impl<'src> Lexer<'src> {
                 }),
 
                 '0' => {
-                    if self.cursor.peek() == '0' {
+                    if self.cursor.peek() == 'x' {
                         self.consume_hex_number()
                     } else {
                         self.consume_number()
@@ -426,7 +430,25 @@ impl<'a> Lexer<'a> {
 
     /// Consume a hexadecimal number literal.
     fn consume_hex_number(&mut self) -> ParseResult<Token> {
-        todo!()
+        debug_assert!(self.cursor.rest().starts_with("0x"));
+
+        self.cursor.bump(); // 0
+        self.cursor.bump(); // x
+
+        self.consume_hex_digits();
+
+        self.make_number(true)
+    }
+
+    /// Consume hexadecimal number digits until interrupted.
+    fn consume_hex_digits(&mut self) {
+        while !self.cursor.at_end() {
+            if self.cursor.char().is_ascii_hexdigit() {
+                self.cursor.bump();
+            } else {
+                break;
+            }
+        }
     }
 
     /// Consume an integer, floating point or scientific number literal.
@@ -598,6 +620,16 @@ mod test {
         assert_eq!(lexer.next_token_tuple(), (Span::new(0, 5), TK::Keyword(KW::Break)));
         assert_eq!(lexer.next_token_tuple(), (Span::new(6, 8), TK::Keyword(KW::Continue)));
         assert_eq!(lexer.next_token_tuple(), (Span::new(15, 5), TK::Keyword(KW::Class)));
+    }
+
+    #[test]
+    fn test_hex_number() {
+        let mut lexer = Lexer::from_source("0x7f");
+
+        let token = lexer.next_token().expect("next token");
+        assert_eq!(token.span, Span::new(0, 4));
+        assert_eq!(token.kind, TK::Number);
+        assert_eq!(token.num as i64, 0x7f);
     }
 
     #[test]
