@@ -4,7 +4,8 @@ use super::cursor::Cursor;
 use super::token::{Token, TokenKind};
 use crate::compiler::span::Span;
 use crate::compiler::token::KeywordKind;
-use crate::error::{ParseError, ParseResult, WrenResult};
+use crate::error::{ErrorKind, ParseError, ParseResult, WrenError, WrenResult};
+use crate::limits::*;
 
 // Errors:
 //
@@ -30,6 +31,9 @@ pub struct Lexer<'src> {
     /// Starting absolute byte position of the current token
     /// in the source.
     start_pos: usize,
+    // Tracks the lexing state when tokenizing interpolated strings.
+    parens: [usize; MAX_INTERPOLATION_NESTING],
+    paren_num: usize,
 }
 
 impl<'src> Lexer<'src> {
@@ -48,7 +52,12 @@ impl<'src> Lexer<'src> {
         // initial byte position is. It's probably 0.
         let start_pos = cursor.position();
 
-        Lexer { cursor, start_pos }
+        Lexer {
+            cursor,
+            start_pos,
+            parens: [0; MAX_INTERPOLATION_NESTING],
+            paren_num: 0,
+        }
     }
 
     /// Slice the sourcecode according to the current token's span.
@@ -162,8 +171,28 @@ impl<'src> Lexer<'src> {
 
             let result = match ch {
                 // TODO: Ignore BOM
-                '(' => self.one_char_token(TK::LeftParen),
-                ')' => self.one_char_token(TK::RightParen),
+                '(' => {
+                    // If we are inside an interpolated expression, count the unmatched "(".
+                    if self.paren_num > 0 {
+                        self.parens[self.paren_num - 1] += 1;
+                    }
+
+                    self.one_char_token(TK::LeftParen)
+                }
+                ')' => {
+                    // If we are inside an interpolated expression, count the ")"
+                    if self.paren_num > 0 && {
+                        self.parens[self.paren_num - 1] -= 1;
+                        self.parens[self.paren_num - 1] == 0
+                    } {
+                        // This is the final ")", so the interpolation expression has ended.
+                        // This ")" now begins the next section of the template string.
+                        self.paren_num -= 1;
+                        self.consume_string()
+                    } else {
+                        self.one_char_token(TK::RightParen)
+                    }
+                }
                 '[' => self.one_char_token(TK::LeftBracket),
                 ']' => self.one_char_token(TK::RightBracket),
                 '{' => self.one_char_token(TK::LeftBrace),
@@ -261,7 +290,10 @@ impl<'src> Lexer<'src> {
             let token = match result {
                 Ok(token) => token,
                 Err(parse_error) => {
-                    panic!("parse error at {idx}, '{ch}': {parse_error:?}");
+                    return Err(WrenError {
+                        kind: ErrorKind::Parse(parse_error),
+                    });
+                    // panic!("parse error at {idx}, '{ch}': {parse_error:?}");
                 }
             };
 
@@ -397,7 +429,67 @@ impl<'a> Lexer<'a> {
 
     /// Consume a string literal, surrounded by double-quotes.
     fn consume_string(&mut self) -> ParseResult<Token> {
-        todo!()
+        debug_assert!(matches!(self.cursor.char(), '"' | ')'));
+
+        self.cursor.bump(); // "
+
+        let mut buf = String::new();
+        let mut kind = TokenKind::String;
+        let mut error: Option<ParseError> = None;
+
+        loop {
+            if self.cursor.at_end() {
+                return Err(ParseError::UnterminatedString);
+            }
+
+            match self.cursor.char() {
+                '"' => {
+                    self.cursor.bump(); // "
+                    break;
+                }
+                '\r' => continue,
+
+                // String interpolation
+                '%' => {
+                    self.cursor.bump(); // %
+
+                    if self.paren_num < self.parens.len() {
+                        if !self.cursor.match_bump('(') {
+                            error = Some(ParseError::UnexpectedStringInterpolation);
+                        }
+
+                        self.parens[self.paren_num] = 1;
+                        self.paren_num += 1;
+
+                        kind = TokenKind::Interpolated;
+                        break;
+                    } else {
+                        error = Some(ParseError::MaxInterpolationLevel);
+                    }
+                }
+
+                // Escape codes
+                '\\' => {
+                    self.cursor.bump();
+                    match self.cursor.char() {
+                        '"' => {}
+                        '\\' => {}
+                        '%' => {}
+                        '0' => {}
+                        _ => panic!(),
+                    }
+                }
+
+                _ => {
+                    self.cursor.bump();
+                }
+            }
+        }
+
+        match error {
+            Some(parse_error) => Err(parse_error),
+            None => Ok(self.make_token(kind)),
+        }
     }
 
     /// Consume a raw string literal, surrounded by three double-quotes '"""'.
@@ -642,5 +734,14 @@ mod test {
         assert_eq!(lexer.next_token_tuple(), (Span::new(8, 1), TK::Number));
         assert_eq!(lexer.next_token_tuple(), (Span::new(10, 1), TK::Plus));
         assert_eq!(lexer.next_token_tuple(), (Span::new(12, 1), TK::Number));
+    }
+
+    #[test]
+    fn test_string_interpolation() {
+        let mut lexer = Lexer::from_source(r#""one %( "two" )""#);
+
+        assert_eq!(lexer.next_token_tuple(), (Span::new(0, 7), TK::Interpolated));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(8, 5), TK::String));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(14, 2), TK::String));
     }
 }

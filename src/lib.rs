@@ -1,6 +1,7 @@
 mod builder;
 pub mod compiler;
 mod error;
+mod limits;
 mod string;
 mod vm;
 

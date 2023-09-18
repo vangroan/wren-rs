@@ -2,6 +2,8 @@
 use std::fmt::{self, Display, Formatter};
 use std::num::{ParseFloatError, ParseIntError};
 
+use crate::limits::MAX_INTERPOLATION_NESTING;
+
 pub type WrenResult<T> = Result<T, WrenError>;
 pub type ParseResult<T> = Result<T, ParseError>;
 
@@ -31,6 +33,8 @@ pub enum ParseError {
     InvalidCharacter(char),
     /// Invalid keyword identifier.
     InvalidKeyword,
+    /// Maximum string interpolation level.
+    MaxInterpolationLevel,
     /// Error parsing an integer number
     ParseInt(ParseIntError),
     /// Error parsing a floating point number
@@ -39,6 +43,10 @@ pub enum ParseError {
     UnterminatedBlockComment,
     /// Unterminated scientific notation.
     UnterminatedScientificNotation,
+    /// Unterminated string.
+    UnterminatedString,
+    /// Unexpected string interpolation character.
+    UnexpectedStringInterpolation,
     /// Unexpected character.
     UnexpectedChar,
     /// Unexpected end-of-file.
@@ -63,10 +71,16 @@ impl Display for WrenError {
                 PE::InvalidByte(ch) => write!(f, "invalid byte {}", ch.escape_default()),
                 PE::InvalidCharacter(ch) => write!(f, "invalid character '{ch}'"),
                 PE::InvalidKeyword => write!(f, "invalid keyword"),
+                PE::MaxInterpolationLevel => write!(
+                    f,
+                    "string interpolation may only nest {MAX_INTERPOLATION_NESTING} levels deep"
+                ),
                 PE::ParseInt(err) => err.fmt(f),
                 PE::ParseFloat(err) => err.fmt(f),
                 PE::UnterminatedBlockComment => write!(f, "unterminated block comment"),
                 PE::UnterminatedScientificNotation => write!(f, "unterminated scientific notation"),
+                PE::UnterminatedString => write!(f, "unterminated string"),
+                PE::UnexpectedStringInterpolation => write!(f, "expected '(' after '%'"),
                 PE::UnexpectedChar => write!(f, "unexpected character"),
                 PE::UnexpectedEOF => write!(f, "unexpected end-of-file"),
             },
