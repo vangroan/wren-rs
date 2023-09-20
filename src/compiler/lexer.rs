@@ -4,6 +4,7 @@ use super::cursor::Cursor;
 use super::token::{Token, TokenKind};
 use crate::compiler::span::Span;
 use crate::compiler::token::KeywordKind;
+use crate::error::ParseError::InvalidEscapeChar;
 use crate::error::{ErrorKind, ParseError, ParseResult, WrenError, WrenResult};
 use crate::limits::*;
 
@@ -435,6 +436,9 @@ impl<'a> Lexer<'a> {
 
         let mut buf = String::new();
         let mut kind = TokenKind::String;
+
+        // In case of malformed interpolation characters, continue consuming
+        // the rest of the string so the lexer can continue on the next tokens.
         let mut error: Option<ParseError> = None;
 
         loop {
@@ -472,11 +476,30 @@ impl<'a> Lexer<'a> {
                 '\\' => {
                     self.cursor.bump();
                     match self.cursor.char() {
-                        '"' => {}
-                        '\\' => {}
-                        '%' => {}
-                        '0' => {}
-                        _ => panic!(),
+                        '"' => {
+                            buf.push('"');
+                        }
+                        '\\' => buf.push('\\'),
+                        '%' => buf.push('%'),
+                        '0' => buf.push('\0'),
+                        'a' => buf.push('\x07'), // Alert (Bell)
+                        'b' => buf.push('\x08'), // Backspace
+                        'e' => buf.push('\x1B'), // ESC
+                        'f' => buf.push('\x0C'), // Form-feed
+                        'n' => buf.push('\n'),   // Newline
+                        'r' => buf.push('\r'),   // Carriage Return
+                        't' => buf.push('\t'),   // Horizontal tab
+                        'u' => {
+                            todo!("unicode escape")
+                        }
+                        'U' => {
+                            todo!("unicode escape")
+                        }
+                        'v' => buf.push('\x0B'), // Vertical tab
+                        'x' => {
+                            todo!("hex escape")
+                        }
+                        ch => error = Some(ParseError::InvalidEscapeChar(ch)),
                     }
                 }
 
@@ -530,6 +553,26 @@ impl<'a> Lexer<'a> {
         self.consume_hex_digits();
 
         self.make_number(true)
+    }
+
+    fn consume_hex_escape(&mut self, length: usize) -> ParseResult<char> {
+        debug_assert!(self.cursor.char().is_ascii_hexdigit());
+
+        let mut value: u32 = 0;
+        for _ in 0..length {
+            if self.cursor.at_end() || self.cursor.char() == '"' {
+                return Err(ParseError::IncompleteEscape);
+            }
+
+            if let Some(digit) = self.cursor.char().to_digit(16) {
+                value = (value * 16) | digit;
+                self.cursor.bump();
+            } else {
+                return Err(InvalidEscapeChar(self.cursor.char()));
+            }
+        }
+
+        char::from_u32(value).ok_or_else(|| ParseError::InvalidUnicode(value))
     }
 
     /// Consume hexadecimal number digits until interrupted.
@@ -712,6 +755,27 @@ mod test {
         assert_eq!(lexer.next_token_tuple(), (Span::new(0, 5), TK::Keyword(KW::Break)));
         assert_eq!(lexer.next_token_tuple(), (Span::new(6, 8), TK::Keyword(KW::Continue)));
         assert_eq!(lexer.next_token_tuple(), (Span::new(15, 5), TK::Keyword(KW::Class)));
+    }
+
+    #[test]
+    fn test_hex_escape() {
+        let mut lexer = Lexer::from_source(r#""\x41 \x61 \u2764""#);
+
+        lexer.cursor.bump(); // "
+        lexer.cursor.bump(); // /
+        lexer.cursor.bump(); // x
+        assert_eq!(lexer.consume_hex_escape(2).unwrap(), 'A');
+        assert_eq!(lexer.cursor.position(), 5);
+
+        lexer.cursor.bump(); // space
+        lexer.cursor.bump(); // /
+        lexer.cursor.bump(); // x
+        assert_eq!(lexer.consume_hex_escape(2).unwrap(), 'a');
+
+        lexer.cursor.bump(); // space
+        lexer.cursor.bump(); // /
+        lexer.cursor.bump(); // x
+        assert_eq!(lexer.consume_hex_escape(4).unwrap(), '❤');
     }
 
     #[test]

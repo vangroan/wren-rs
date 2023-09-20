@@ -27,10 +27,16 @@ pub enum ErrorKind {
 
 #[derive(Debug)]
 pub enum ParseError {
+    /// Incomplete escape sequence.
+    IncompleteEscape,
     /// Invalid source code byte.
     InvalidByte(char),
     /// Invalid source code character.
     InvalidCharacter(char),
+    /// Invalid string escape character.
+    InvalidEscapeChar(char),
+    /// Invalid Unicode character
+    InvalidUnicode(u32),
     /// Invalid keyword identifier.
     InvalidKeyword,
     /// Maximum string interpolation level.
@@ -68,8 +74,11 @@ impl Display for WrenError {
 
         match &self.kind {
             EK::Parse(err) => match err {
+                PE::IncompleteEscape => write!(f, "incomplete escape sequence"),
                 PE::InvalidByte(ch) => write!(f, "invalid byte {}", ch.escape_default()),
                 PE::InvalidCharacter(ch) => write!(f, "invalid character '{ch}'"),
+                PE::InvalidEscapeChar(ch) => write!(f, "invalid escape character '{}'", ch.escape_default()),
+                PE::InvalidUnicode(ord) => write!(f, "invalid Unicode bytes 0x{:04x}", ord),
                 PE::InvalidKeyword => write!(f, "invalid keyword"),
                 PE::MaxInterpolationLevel => write!(
                     f,
