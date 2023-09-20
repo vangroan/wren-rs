@@ -3,8 +3,8 @@ use std::str::FromStr;
 use super::cursor::Cursor;
 use super::token::{Token, TokenKind};
 use crate::compiler::span::Span;
-use crate::compiler::token::KeywordKind;
-use crate::error::ParseError::InvalidEscapeChar;
+use crate::compiler::token::{KeywordKind, LiteralValue};
+use crate::error::ParseError::*;
 use crate::error::{ErrorKind, ParseError, ParseResult, WrenError, WrenResult};
 use crate::limits::*;
 
@@ -32,7 +32,7 @@ pub struct Lexer<'src> {
     /// Starting absolute byte position of the current token
     /// in the source.
     start_pos: usize,
-    // Tracks the lexing state when tokenizing interpolated strings.
+    /// Tracks the lexing state when tokenizing interpolated strings.
     parens: [usize; MAX_INTERPOLATION_NESTING],
     paren_num: usize,
 }
@@ -110,7 +110,7 @@ impl<'src> Lexer<'src> {
         let token = Token {
             span: Span { pos: start, size },
             kind,
-            num: 0.0,
+            value: LiteralValue::None,
         };
 
         if cfg!(feature = "trace_lexer") {
@@ -137,8 +137,16 @@ impl<'src> Lexer<'src> {
         };
 
         Ok(Token {
-            num,
+            value: LiteralValue::Number(num),
             ..self.make_token(TokenKind::Number)
+        })
+    }
+
+    ///  Make a new token, using the given string as the literal value.
+    fn make_string(&mut self, kind: TokenKind, string: String) -> ParseResult<Token> {
+        Ok(Token {
+            value: LiteralValue::String(string),
+            ..self.make_token(kind)
         })
     }
 
@@ -310,7 +318,7 @@ impl<'src> Lexer<'src> {
         Ok(Token {
             span: Span::empty(self.cursor.position()),
             kind: TokenKind::End,
-            num: 0.0,
+            value: LiteralValue::None,
         })
     }
 
@@ -437,10 +445,6 @@ impl<'a> Lexer<'a> {
         let mut buf = String::new();
         let mut kind = TokenKind::String;
 
-        // In case of malformed interpolation characters, continue consuming
-        // the rest of the string so the lexer can continue on the next tokens.
-        let mut error: Option<ParseError> = None;
-
         loop {
             if self.cursor.at_end() {
                 return Err(ParseError::UnterminatedString);
@@ -459,7 +463,8 @@ impl<'a> Lexer<'a> {
 
                     if self.paren_num < self.parens.len() {
                         if !self.cursor.match_bump('(') {
-                            error = Some(ParseError::UnexpectedStringInterpolation);
+                            self.consume_string_rest()?;
+                            return Err(ParseError::UnexpectedStringInterpolation);
                         }
 
                         self.parens[self.paren_num] = 1;
@@ -468,7 +473,8 @@ impl<'a> Lexer<'a> {
                         kind = TokenKind::Interpolated;
                         break;
                     } else {
-                        error = Some(ParseError::MaxInterpolationLevel);
+                        self.consume_string_rest()?;
+                        return Err(ParseError::MaxInterpolationLevel);
                     }
                 }
 
@@ -477,42 +483,104 @@ impl<'a> Lexer<'a> {
                     self.cursor.bump();
                     match self.cursor.char() {
                         '"' => {
+                            self.cursor.bump();
                             buf.push('"');
                         }
-                        '\\' => buf.push('\\'),
-                        '%' => buf.push('%'),
-                        '0' => buf.push('\0'),
-                        'a' => buf.push('\x07'), // Alert (Bell)
-                        'b' => buf.push('\x08'), // Backspace
-                        'e' => buf.push('\x1B'), // ESC
-                        'f' => buf.push('\x0C'), // Form-feed
-                        'n' => buf.push('\n'),   // Newline
-                        'r' => buf.push('\r'),   // Carriage Return
-                        't' => buf.push('\t'),   // Horizontal tab
-                        'u' => {
-                            todo!("unicode escape")
+                        '\\' => {
+                            self.cursor.bump();
+                            buf.push('\\')
                         }
-                        'U' => {
-                            todo!("unicode escape")
+                        '%' => {
+                            self.cursor.bump();
+                            buf.push('%')
                         }
-                        'v' => buf.push('\x0B'), // Vertical tab
+                        '0' => {
+                            self.cursor.bump();
+                            buf.push('\0')
+                        }
+                        // Alert (Bell)
+                        'a' => {
+                            self.cursor.bump();
+                            buf.push('\x07')
+                        }
+                        // Backspace
+                        'b' => {
+                            self.cursor.bump();
+                            buf.push('\x08')
+                        }
+                        // ESC
+                        'e' => {
+                            self.cursor.bump();
+                            buf.push('\x1B')
+                        }
+                        // Form-feed
+                        'f' => {
+                            self.cursor.bump();
+                            buf.push('\x0C')
+                        }
+                        // Newline
+                        'n' => {
+                            self.cursor.bump();
+                            buf.push('\n')
+                        }
+                        // Carriage Return
+                        'r' => {
+                            self.cursor.bump();
+                            buf.push('\r')
+                        }
+                        // Horizontal tab
+                        't' => {
+                            self.cursor.bump();
+                            buf.push('\t')
+                        }
+                        'u' | 'U' => {
+                            self.cursor.bump();
+                            let ch = self.consume_hex_escape(4)?;
+                            buf.push(ch)
+                        }
+                        // Vertical tab
+                        'v' => {
+                            self.cursor.bump();
+                            buf.push('\x0B')
+                        }
                         'x' => {
-                            todo!("hex escape")
+                            self.cursor.bump();
+                            let ch = self.consume_hex_escape(2)?;
+                            buf.push(ch)
                         }
-                        ch => error = Some(ParseError::InvalidEscapeChar(ch)),
+                        ch => {
+                            self.consume_string_rest()?;
+                            return Err(ParseError::InvalidEscapeChar(ch));
+                        }
                     }
                 }
 
-                _ => {
+                ch => {
+                    buf.push(ch);
                     self.cursor.bump();
                 }
             }
         }
 
-        match error {
-            Some(parse_error) => Err(parse_error),
-            None => Ok(self.make_token(kind)),
+        self.make_string(kind, buf)
+    }
+
+    /// Consume the rest of a string, until the terminal quote '"'.
+    fn consume_string_rest(&mut self) -> ParseResult<()> {
+        loop {
+            if self.cursor.at_end() {
+                return Err(ParseError::UnterminatedString);
+            }
+
+            if self.cursor.char() == '"' {
+                self.cursor.bump();
+                break;
+            } else {
+                self.cursor.bump();
+            }
         }
+
+        Ok(())
     }
 
     /// Consume a raw string literal, surrounded by three double-quotes '"""'.
@@ -555,13 +623,15 @@ impl<'a> Lexer<'a> {
         self.make_number(true)
     }
 
+    /// Parse the hexadecimal escape sequence into a Unicode character.
     fn consume_hex_escape(&mut self, length: usize) -> ParseResult<char> {
         debug_assert!(self.cursor.char().is_ascii_hexdigit());
 
         let mut value: u32 = 0;
         for _ in 0..length {
             if self.cursor.at_end() || self.cursor.char() == '"' {
-                return Err(ParseError::IncompleteEscape);
+                self.cursor.bump(); // "
+                return Err(IncompleteEscape);
             }
 
             if let Some(digit) = self.cursor.char().to_digit(16) {
@@ -779,13 +849,24 @@ mod test {
     }
 
     #[test]
+    fn test_hex_escape_incomplete_escape() {
+        let mut lexer = Lexer::from_source(r#""\u276""#);
+
+        lexer.cursor.bump(); // "
+        lexer.cursor.bump(); // /
+        lexer.cursor.bump(); // u
+        assert_eq!(lexer.consume_hex_escape(4), Err(ParseError::IncompleteEscape));
+        assert_eq!(lexer.cursor.position(), 6);
+    }
+
+    #[test]
     fn test_hex_number() {
         let mut lexer = Lexer::from_source("0x7f");
 
         let token = lexer.next_token().expect("next token");
         assert_eq!(token.span, Span::new(0, 4));
         assert_eq!(token.kind, TK::Number);
-        assert_eq!(token.num as i64, 0x7f);
+        assert_eq!(token.value as i64, 0x7f);
     }
 
     #[test]

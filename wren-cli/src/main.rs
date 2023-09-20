@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 
 use clap::Parser;
-use wren::compiler::{Lexer, TokenKind};
+use wren::compiler::{Lexer, TokenKind, LiteralValue};
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
@@ -26,11 +26,14 @@ fn repl() {
                 Ok(token) => {
                     print!("{:>4}:{:<4} {:?}", token.span.pos, token.span.end(), token.kind);
 
-                    match token.kind {
-                        TokenKind::Number => {
-                            println!(" {}", token.num);
+                    match (token.kind, token.value) {
+                        (TokenKind::Number, LiteralValue::Number(num)) => {
+                            println!(" {}", num);
                         }
-                        TokenKind::End => {
+                        (TokenKind::String | TokenKind::Interpolated, LiteralValue::String(string)) => {
+                            println!(" {:?}", string);
+                        }
+                        (TokenKind::End, _) => {
                             println!("");
                             break;
                         }

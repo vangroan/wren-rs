@@ -7,7 +7,14 @@ use crate::error::ParseError;
 pub struct Token {
     pub span: Span,
     pub kind: TokenKind,
-    pub num: f64,
+    pub value: LiteralValue,
+}
+
+#[derive(Debug)]
+pub enum LiteralValue {
+    None,
+    Number(f64),
+    String(String),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

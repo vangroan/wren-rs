@@ -25,7 +25,7 @@ pub enum ErrorKind {
     Runtime,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum ParseError {
     /// Incomplete escape sequence.
     IncompleteEscape,
