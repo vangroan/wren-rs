@@ -774,7 +774,7 @@ mod test {
 
         lexer.cursor.bump(); // space
         lexer.cursor.bump(); // /
-        lexer.cursor.bump(); // x
+        lexer.cursor.bump(); // u
         assert_eq!(lexer.consume_hex_escape(4).unwrap(), '❤');
     }
 
