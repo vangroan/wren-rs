@@ -25,7 +25,7 @@ jobs:
         uses: actions-rs/cargo@v1
         env:
           # warnings already handled as errors in clippy lint
-          RUSTFLAGS: -Awarnings
+          RUSTFLAGS: -A warnings
         with:
           command: test
 
