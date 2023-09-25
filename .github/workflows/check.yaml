@@ -1,8 +1,8 @@
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   pull_request:
+    branches: [ main ]
 
 name: Checks
 
@@ -23,6 +23,9 @@ jobs:
 
       - name: Run cargo test
         uses: actions-rs/cargo@v1
+        env:
+          # warnings already handled as errors in clippy lint
+          RUSTFLAGS: -Awarnings
         with:
           command: test
 
