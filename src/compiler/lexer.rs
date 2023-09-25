@@ -78,9 +78,10 @@ impl<'src> Lexer<'src> {
     /// Note that source can contain '\0' (end-of-file) characters,
     /// but not be at the actual end. It's thus important to verify
     /// with this function whenever a [`TokenKind::End`] is encountered.
-    // pub fn at_end(&self) -> bool {
-    //     self.rest.is_empty()
-    // }
+    #[inline]
+    pub fn at_end(&self) -> bool {
+        self.cursor.at_end()
+    }
 
     /// Build a token, using the source text from the position
     /// stored by [`start_token`](struct.Lexer.html#fn-start_token) to the
