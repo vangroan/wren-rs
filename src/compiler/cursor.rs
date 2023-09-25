@@ -149,6 +149,15 @@ impl<'src> Cursor<'src> {
         }
     }
 
+    /// Skip over the given number of characters.
+    ///
+    /// The name `skip` makes clippy unhappy at each call site.
+    pub fn skip_n(&mut self, n: usize) {
+        for _ in 0..n {
+            self.bump();
+        }
+    }
+
     pub fn with_bump(mut self) -> Self {
         self.bump();
         self
@@ -228,5 +237,14 @@ mod test {
         assert_eq!(cursor.bump(), None);
         assert_eq!(cursor.char(), EOF_CHAR); // implicit
         assert_eq!(cursor.position(), 4);
+    }
+
+    #[test]
+    fn test_skip() {
+        let mut cursor = Cursor::from_str("abcdef").with_bump();
+        cursor.skip_n(3);
+        assert_eq!(cursor.position(), 3);
+        assert_eq!(cursor.char(), 'd');
+        assert_eq!(cursor.rest(), "def");
     }
 }

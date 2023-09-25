@@ -585,7 +585,108 @@ impl<'a> Lexer<'a> {
 
     /// Consume a raw string literal, surrounded by three double-quotes '"""'.
     fn consume_raw_string(&mut self) -> ParseResult<Token> {
-        todo!()
+        debug_assert!(self.cursor.rest().starts_with(r#"""""#));
+
+        self.cursor.bump(); // "
+        self.cursor.bump(); // "
+        self.cursor.bump(); // "
+
+        // TODO: One day the VM should have a proper string interning table
+        let mut buf = String::new();
+        let mut start_pos = self.cursor.position(); // used for converting source code positions to string buffer indices
+        let mut skipped: bool = false; // indicates that the first line was skipped
+        let mut last_nl: Option<usize> = None; // source code index of the last seen newline character
+
+        // Skip over the starting line if it only contains the
+        // starting quote-triplet, and only whitespace.
+        if let Some(count) = self.raw_line_empty() {
+            self.cursor.skip_n(count);
+            // We must keep track of whether the first line was skipped,
+            // because the logic for truncating the last line relies on
+            // the presence of a preceding newline.
+            //
+            // However the first line's newline character has now been discarded.
+            skipped = true;
+
+            // By skipping this first line the start of our string buffer relative
+            // to the original source code is now offset further forwards.
+            start_pos += count;
+        }
+
+        loop {
+            if self.cursor.at_end() {
+                return Err(UnterminatedString);
+            }
+
+            if self.cursor.rest().starts_with(r#"""""#) {
+                if let Some(pos) = last_nl {
+                    // Case where the last line only contains whitespace
+                    // before the closing quotes.
+                    buf.truncate(pos - start_pos);
+                } else if skipped {
+                    // Special case where the raw string only contains whitespace,
+                    // but the quotes are on two separate lines.
+                    buf.truncate(0);
+                }
+
+                self.cursor.bump(); // "
+                self.cursor.bump(); // "
+                self.cursor.bump(); // "
+                break;
+            }
+
+            if self.cursor.char() == '\r' {
+                // Skip over carriage return;
+                self.cursor.bump();
+                continue;
+            }
+
+            if self.cursor.char() == '\n' {
+                // Store the last encountered newline.
+                //
+                // This helps indicate if the last quote-triplet is on an empty line.
+                last_nl = Some(self.cursor.position());
+            } else if !self.cursor.char().is_whitespace() {
+                // Clear the newline marker if the line following it contains
+                // something other than whitespace.
+                last_nl = None;
+            }
+
+            buf.push(self.cursor.char());
+            self.cursor.bump();
+        }
+
+        self.make_string(TokenKind::String, buf)
+    }
+
+    /// Look ahead to determine if the line can be skipped
+    /// depending on the rules for a raw string.
+    ///
+    /// Returns `None` if the line shouldn't be skipped.
+    fn raw_line_empty(&mut self) -> Option<usize> {
+        let rest = self.cursor.rest();
+
+        for (idx, ch) in rest.char_indices() {
+            if ch == '\n' {
+                return Some(idx + 1);
+            }
+
+            if ch == '"' {
+                let end = (idx + 3).min(rest.len());
+                let quote = &rest[idx..end];
+                if quote == "\"\"\"" {
+                    // End of raw string
+                    return None;
+                }
+            }
+
+            if !ch.is_whitespace() {
+                // Line is not empty
+                break;
+            }
+        }
+
+        None
     }
 
     /// Consume an identifier.
@@ -856,7 +957,8 @@ mod test {
         lexer.cursor.bump(); // /
         lexer.cursor.bump(); // u
         assert_eq!(lexer.consume_hex_escape(4), Err(ParseError::IncompleteEscape));
-        assert_eq!(lexer.cursor.position(), 6);
+        assert_eq!(lexer.cursor.char(), '\0');
+        assert_eq!(lexer.cursor.position(), 7);
     }
 
     #[test]
@@ -866,7 +968,7 @@ mod test {
         let token = lexer.next_token().expect("next token");
         assert_eq!(token.span, Span::new(0, 4));
         assert_eq!(token.kind, TK::Number);
-        assert_eq!(token.value as i64, 0x7f);
+        assert_eq!(token.value.as_u32(), Some(0x7f));
     }
 
     #[test]
@@ -888,5 +990,67 @@ mod test {
         assert_eq!(lexer.next_token_tuple(), (Span::new(0, 7), TK::Interpolated));
         assert_eq!(lexer.next_token_tuple(), (Span::new(8, 5), TK::String));
         assert_eq!(lexer.next_token_tuple(), (Span::new(14, 2), TK::String));
+    }
+
+    #[test]
+    /// Raw strings ignore whitespace on the lines containing the
+    /// opening and closing """
+    fn test_raw_string() {
+        let mut lexer = Lexer::from_source(
+            r#"
+        """
+        hello world
+        """
+        "#,
+        );
+
+        lexer.next_token().unwrap(); // newline
+        let token = lexer.next_token().unwrap();
+        assert_eq!(token.span, Span::new(9, 35)); // includes quotes
+        assert_eq!(token.value.str(), Some("        hello world")); // lines containing quote must be omitted
+    }
+
+    #[test]
+    fn test_raw_string_empty_one_line() {
+        let mut lexer = Lexer::from_source(
+            r#"
+        """   """
+        "#,
+        );
+
+        lexer.next_token().unwrap(); // newline
+        let token = lexer.next_token().unwrap();
+        assert_eq!(token.span, Span::new(9, 9)); // includes quotes
+        assert_eq!(token.value.str(), Some("   ")); // lines containing quote must be omitted
+    }
+
+    #[test]
+    fn test_raw_string_first_line() {
+        let mut lexer = Lexer::from_source(
+            r#"
+        """   a
+        """
+        "#,
+        );
+
+        lexer.next_token().unwrap(); // newline
+        let token = lexer.next_token().unwrap();
+        assert_eq!(token.span, Span::new(9, 19)); // includes quotes
+        assert_eq!(token.value.str(), Some("   a")); // lines containing quote must be omitted
+    }
+
+    #[test]
+    fn test_raw_string_empty() {
+        let mut lexer = Lexer::from_source(
+            r#"
+        """
+        """
+        "#,
+        );
+
+        lexer.next_token().unwrap(); // newline
+        let token = lexer.next_token().unwrap();
+        assert_eq!(token.span, Span::new(9, 15)); // includes quotes
+        assert_eq!(token.value.str(), Some(""), "empty lines must be omitted");
     }
 }

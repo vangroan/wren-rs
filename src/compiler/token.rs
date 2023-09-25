@@ -10,7 +10,7 @@ pub struct Token {
     pub value: LiteralValue,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum LiteralValue {
     None,
     Number(f64),
@@ -120,6 +120,26 @@ impl Token {
     pub fn to_tuple(self) -> (Span, TokenKind) {
         let Self { span, kind, .. } = self;
         (span, kind)
+    }
+}
+
+impl LiteralValue {
+    pub fn num(&self) -> Option<f64> {
+        match self {
+            Self::Number(num) => Some(*num),
+            _ => None,
+        }
+    }
+
+    pub fn as_u32(&self) -> Option<u32> {
+        self.num().map(|num| num as u32)
+    }
+
+    pub fn str(&self) -> Option<&str> {
+        match self {
+            Self::String(string) => Some(string.as_str()),
+            _ => None,
+        }
     }
 }
 
