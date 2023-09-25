@@ -3,7 +3,6 @@ use std::io::{self, Write};
 use clap::Parser;
 use wren::compiler::{Lexer, TokenKind, LiteralValue};
 
-/// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {}
