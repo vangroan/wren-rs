@@ -10,7 +10,7 @@ name = "wren"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.4", features = [ "derive" ] }
 env_logger = "0.10"
 log = "0.4"
-wren-rs = { path = "..", version = "*" }
+wren-rs = { path = "..", version = "*", features = [ "trace_lexer" ] }

@@ -8,20 +8,14 @@ use crate::error::ParseError::*;
 use crate::error::{ErrorKind, ParseError, ParseResult, WrenError, WrenResult};
 use crate::limits::*;
 
-// Errors:
-//
-// - Unterminated block comment
-// - Number literal was too large
-// - Unterminated scientific notation
-// - Incomplete %s escape sequence (readHexEscape in string)
-// - Invalid %s escape sequence (readHexEscape in string)
-// - Unterminated raw string
-// - Unterminated string
-// - Expect '(' after '%%'.
-// - Interpolation may only nest 8 levels deep
-// - Invalid escape character
-// - Invalid character '%c'
-// - Invalid byte 0x%x.
+/// Shorthand for trace logging the lexer.
+macro_rules! lexer_trace {
+    ($($arg:tt)+) => {
+        if cfg!(feature = "trace_lexer") {
+            log::trace!($($arg)+)
+        }
+    }
+}
 
 /// Lexical analyser (tokeniser) for the Wren language.
 pub struct Lexer<'src> {
@@ -113,9 +107,7 @@ impl<'src> Lexer<'src> {
             value: LiteralValue::None,
         };
 
-        if cfg!(feature = "trace_lexer") {
-            log::trace!("{start:>4}:{end:<6}{kind:?} ({size})")
-        }
+        lexer_trace!("{start:>4}:{end:<6}{kind:?} ({size})");
 
         token
     }
@@ -168,9 +160,7 @@ impl<'src> Lexer<'src> {
         use TokenKind as TK;
 
         while let Some((idx, ch)) = self.cursor.current() {
-            if cfg!(feature = "trace_lexer") {
-                log::trace!("char: ({idx}, {ch})");
-            }
+            lexer_trace!("char: ({idx}, {ch:?})");
 
             // Invariant: The lexer's cursor must be pointing to the
             //            start of the remainder of the source to be consumed.
