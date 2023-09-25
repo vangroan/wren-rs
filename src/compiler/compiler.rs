@@ -1,3 +1,6 @@
+// TODO: Remove when compiler implementation is done
+#![allow(dead_code)]
+
 use super::lexer::Lexer;
 
 pub struct WrenCompiler<'a> {

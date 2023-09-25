@@ -2,16 +2,10 @@
 use std::fmt::{self, Display, Formatter};
 use std::num::{ParseFloatError, ParseIntError};
 
-use crate::limits::MAX_INTERPOLATION_NESTING;
+use crate::limits::*;
 
 pub type WrenResult<T> = Result<T, WrenError>;
 pub type ParseResult<T> = Result<T, ParseError>;
-
-pub fn parse_error(parse_error: ParseError) -> WrenError {
-    WrenError {
-        kind: ErrorKind::Parse(parse_error),
-    }
-}
 
 #[derive(Debug)]
 pub struct WrenError {

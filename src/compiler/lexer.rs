@@ -679,6 +679,7 @@ impl<'a> Lexer<'a> {
     }
 
     /// Consume an identifier.
+    #[allow(clippy::single_char_pattern)]
     fn consume_name(&mut self, kind: TokenKind) -> ParseResult<Token> {
         debug_assert!(
             self.cursor.char().is_ascii_alphabetic()
@@ -732,7 +733,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        char::from_u32(value).ok_or_else(|| InvalidUnicode(value))
+        char::from_u32(value).ok_or(InvalidUnicode(value))
     }
 
     /// Consume hexadecimal number digits until interrupted.

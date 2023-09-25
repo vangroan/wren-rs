@@ -111,8 +111,8 @@ impl Token {
     /// Slice a text fragment from the given source code.
     #[inline]
     pub fn fragment<'a>(&self, source: &'a str) -> &'a str {
-        let start = self.span.pos as usize;
-        let end = start + self.span.size as usize;
+        let start = self.span.pos;
+        let end = start + self.span.size;
         &source[start..end]
     }
 

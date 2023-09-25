@@ -44,12 +44,9 @@ impl<'src> Cursor<'src> {
     }
 
     /// Current line number.
+    #[allow(dead_code)] // TODO: Could be used later in compiler implementation
     pub fn line(&self) -> usize {
         self.line
-    }
-
-    fn sentinel(&self) -> (usize, char) {
-        (self.source.len(), EOF_CHAR)
     }
 
     /// Byte position of the current character.
@@ -62,10 +59,6 @@ impl<'src> Cursor<'src> {
     /// If iteration has not started, will return end-of-file character.
     pub fn char(&self) -> char {
         self.prev.map(|(_, c)| c).unwrap_or(EOF_CHAR)
-    }
-
-    pub fn try_char(&self) -> Option<char> {
-        self.prev.map(|(_, c)| c)
     }
 
     pub fn current(&self) -> Option<(usize, char)> {
@@ -86,6 +79,7 @@ impl<'src> Cursor<'src> {
     }
 
     /// Peek the byte position of the next character.
+    #[allow(dead_code)] // TODO: Review if peek_position() is necessary
     pub fn peek_position(&self) -> usize {
         // Byte position of next character is determined by number
         // of bytes taken up by the current character.
@@ -158,6 +152,7 @@ impl<'src> Cursor<'src> {
         }
     }
 
+    #[allow(dead_code)] // used for tests
     pub fn with_bump(mut self) -> Self {
         self.bump();
         self
