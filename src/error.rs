@@ -16,7 +16,7 @@ pub struct WrenError {
 pub enum ErrorKind {
     Parse(ParseError),
     Compile,
-    Runtime,
+    Runtime(RuntimeError),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -53,15 +53,22 @@ pub enum ParseError {
     UnexpectedEOF,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum RuntimeError {
+    StackOverflow,
+    StackUnderflow,
+}
+
 impl Display for WrenError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         use ErrorKind as EK;
         use ParseError as PE;
+        use RuntimeError as RE;
 
         let prefix = match self.kind {
             EK::Parse(_) => "parse",
             EK::Compile => "compile",
-            EK::Runtime => "runtime",
+            EK::Runtime(_) => "runtime",
         };
 
         write!(f, "{prefix} error: ")?;
@@ -88,7 +95,10 @@ impl Display for WrenError {
                 PE::UnexpectedEOF => write!(f, "unexpected end-of-file"),
             },
             EK::Compile => write!(f, "todo"),
-            EK::Runtime => write!(f, "todo"),
+            EK::Runtime(err) => match err {
+                RE::StackOverflow => write!(f, "stack overflow"),
+                RE::StackUnderflow => write!(f, "stack underflow"),
+            },
         }
     }
 }

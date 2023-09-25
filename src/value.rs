@@ -1,11 +1,30 @@
 //! Dynamically typed value.
+use crate::error::RuntimeError;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::opcode::Op;
 
+/// A reference counted handle with runtime interior mutability.
+///
+/// Bad for performance, but good enough to get the VM working
+/// until we can implement proper garbage collection.
+pub type Handle<T: 'static> = Rc<RefCell<T>>;
+
+pub fn new_handle<T: 'static>(obj: T) -> Handle<T> {
+    Rc::new(RefCell::new(obj))
+}
+
 #[derive(Debug)]
 pub enum Value {
     Null,
+    Closure(Handle<ObjClosure>),
+}
+
+impl From<Handle<ObjClosure>> for Value {
+    fn from(closure: Handle<ObjClosure>) -> Self {
+        Value::Closure(closure)
+    }
 }
 
 /// Identifies which specific type a heap-allocated object is.
@@ -36,11 +55,12 @@ impl ObjModule {
 }
 
 /// Debug information for a function object.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct FnDebug {
     pub(crate) lines: Vec<usize>,
 }
 
+#[derive(Debug)]
 pub(crate) struct ObjFn {
     /// TODO: These can become `Box<[Op]>` after compile is complete
     code: Vec<Op>,
@@ -65,12 +85,13 @@ impl ObjFn {
     }
 }
 
-pub(crate) struct ObjClosure {
-    func: Rc<ObjFn>,
+#[derive(Debug)]
+pub struct ObjClosure {
+    func: Handle<ObjFn>,
 }
 
 impl ObjClosure {
-    pub(crate) fn new(func: Rc<ObjFn>) -> Self {
+    pub(crate) fn new(func: Handle<ObjFn>) -> Self {
         Self { func }
     }
 }
@@ -83,7 +104,7 @@ pub(crate) struct CallFrame {
     pc: usize,
 
     /// The closure being executed.
-    closure: ObjClosure,
+    closure: Handle<ObjClosure>,
 
     /// Offset to the first stack slot used by this call frame. This will contain
     /// the receiver, followed by the function's parameters, then local variables
@@ -95,6 +116,17 @@ pub(crate) struct CallFrame {
 pub(crate) enum StackError {
     Overflow,
     Underflow,
+}
+
+impl From<StackError> for RuntimeError {
+    fn from(value: StackError) -> Self {
+        use StackError::*;
+
+        match value {
+            Overflow => RuntimeError::StackOverflow,
+            Underflow => RuntimeError::StackUnderflow,
+        }
+    }
 }
 
 pub(crate) struct CallStack<const MAX_FRAMES: usize> {
@@ -188,5 +220,43 @@ pub(crate) struct ObjFiber {
     error: Value,
 
     /// Tracks how this fiber has been invoked.
-    state: FiberState,
+    pub(crate) state: FiberState,
+}
+
+impl ObjFiber {
+    pub(crate) fn new(closure: Option<Handle<ObjClosure>>) -> Result<Self, RuntimeError> {
+        let mut fiber = Self {
+            stack: Vec::new(),
+            frames: CallStack::new(),
+            upvalues: Vec::new(),
+            caller: None,
+            error: Value::Null,
+            state: FiberState::Other,
+        };
+
+        if let Some(closure) = closure {
+            fiber.push_call_frame(closure.clone(), 0)?;
+
+            // The first slot always holds the closure.
+            fiber.stack.push(closure.into());
+        }
+
+        Ok(fiber)
+    }
+
+    pub(crate) fn push_call_frame(&mut self, closure: Handle<ObjClosure>, start: usize) -> Result<(), StackError> {
+        let frame = CallFrame { pc: 0, closure, start };
+
+        self.frames.try_push(frame)
+    }
+
+    pub(crate) fn top_frame(&self) -> Option<&CallFrame> {
+        self.frames.data.last()
+    }
+
+    pub(crate) fn load_frame(&self) -> (Option<&CallFrame>, Option<Handle<ObjFn>>) {
+        let frame = self.top_frame().unwrap();
+        let func = frame.closure.borrow().func.clone();
+        (Some(frame), Some(func))
+    }
 }

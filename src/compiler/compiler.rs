@@ -7,7 +7,7 @@ use crate::opcode::Op;
 use std::rc::Rc;
 
 use super::lexer::Lexer;
-use crate::value::{ObjFn, ObjModule};
+use crate::value::{Handle, ObjFn, ObjModule};
 
 pub struct WrenCompiler<'src> {
     lexer: Lexer<'src>,
@@ -56,7 +56,7 @@ impl<'src> WrenCompiler<'src> {
     }
 
     // FIXME: Private ObjFn type in public compile() signature.
-    pub(crate) fn compile(&mut self, _module: ObjModule, is_expression: bool) -> WrenResult<Rc<ObjFn>> {
+    pub(crate) fn compile(&mut self, _module: Handle<ObjModule>, is_expression: bool) -> WrenResult<Handle<ObjFn>> {
         self.func = Some(ObjFn::new());
 
         // Initialise.
@@ -74,7 +74,7 @@ impl<'src> WrenCompiler<'src> {
         self.end_compiler()
     }
 
-    fn end_compiler(&mut self) -> WrenResult<Rc<ObjFn>> {
+    fn end_compiler(&mut self) -> WrenResult<Handle<ObjFn>> {
         // Mark the end of the bytecode. Since it may contain multiple early returns,
         // we can't rely on Op::Return to tell us we're at the end.
         self.emit_op(Op::End);

@@ -1,3 +1,4 @@
+#[derive(Debug)]
 pub(crate) enum Op {
     /// Exit from the current function and return the value on the top of the stack.
     Return,
