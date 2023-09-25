@@ -4,6 +4,8 @@ mod builder;
 pub mod compiler;
 mod error;
 mod limits;
+mod opcode;
+mod value;
 mod vm;
 
 pub use {self::builder::WrenBuilder, self::vm::WrenVm};
