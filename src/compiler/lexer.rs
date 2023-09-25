@@ -119,9 +119,7 @@ impl<'src> Lexer<'src> {
 
         let num = if is_hex {
             // Our token fragment includes the '0x' prefix, which Rust's parser doesn't want.
-            debug_assert!(fragment.starts_with("0x"));
-            let fragment = &fragment[2..];
-
+            let fragment = fragment.trim_start_matches("0x");
             i64::from_str_radix(fragment, 16).map(|n| n as f64).map_err(ParseInt)?
         } else {
             f64::from_str(fragment).map_err(ParseFloat)?
@@ -324,7 +322,7 @@ impl<'src> Lexer<'src> {
     }
 }
 
-impl<'a> Lexer<'a> {
+impl<'src> Lexer<'src> {
     /// Consume one character to create a token.
     fn one_char_token(&mut self, kind: TokenKind) -> ParseResult<Token> {
         self.cursor.bump();
