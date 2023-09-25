@@ -3,5 +3,3 @@
 //
 //      "outside %(one + "%(two + "%(three)")")"
 pub const MAX_INTERPOLATION_NESTING: usize = 8;
-
-// "one %( "two %( "three %( "four %( "five %( "six %( "seven %( "eight %( "nine %( "ten" )" )" )" )" )" )" )" )" )"
