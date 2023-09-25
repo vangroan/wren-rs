@@ -140,22 +140,19 @@ impl<'src> Lexer<'src> {
     }
 
     /// Scan the source characters and construct the next token.
-    ///
-    /// ## Implementation
-    ///
-    /// The internal iteration of the lexer follows this convention:
-    ///
-    /// Each iteration (`next_token` call) starts with the assumption that
-    /// the internal cursor is pointing to the start of the remaining source
-    /// to be consumed.
-    ///
-    /// Initially, the lexer must be constructed with a cursor pointing to
-    /// the start of the source.
-    ///
-    /// When an iteration is done building a token, it must leave the cursor
-    /// at the start of the next token's text. It may not finish leaving the
-    /// cursor pointing into its own token.
     pub fn next_token(&mut self) -> WrenResult<Token> {
+        // The internal iteration of the lexer follows this convention:
+        //
+        // Each iteration (`next_token` call) starts with the assumption that
+        // the internal cursor is pointing to the start of the remaining source
+        // to be consumed.
+        //
+        // Initially, the lexer must be constructed with a cursor pointing to
+        // the start of the source.
+        //
+        // When an iteration is done building a token, it must leave the cursor
+        // at the start of the next token's text. It may not finish leaving the
+        // cursor pointing into its own token.
         use TokenKind as TK;
 
         while let Some((idx, ch)) = self.cursor.current() {
@@ -314,6 +311,7 @@ impl<'src> Lexer<'src> {
     /// # Panic
     ///
     /// Panics on any parsing error.
+    #[cfg(test)]
     pub fn next_token_tuple(&mut self) -> (Span, TokenKind) {
         match self.next_token() {
             Ok(token) => (token.span, token.kind),
