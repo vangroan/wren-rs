@@ -152,7 +152,7 @@ impl<'src> Cursor<'src> {
         }
     }
 
-    #[allow(dead_code)] // used for tests
+    #[cfg(test)]
     pub fn with_bump(mut self) -> Self {
         self.bump();
         self

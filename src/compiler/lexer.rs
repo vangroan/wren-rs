@@ -790,42 +790,6 @@ impl<'src> Lexer<'src> {
     }
 }
 
-//
-// impl<'a> IntoIterator for Lexer<'a> {
-//     type Item = WrenResult<Token>;
-//     type IntoIter = LexerIter<'a>;
-//
-//     fn into_iter(self) -> Self::IntoIter {
-//         LexerIter {
-//             lexer: self,
-//             done: false,
-//         }
-//     }
-// }
-
-/// Convenience iterator that wraps the lexer.
-// pub struct LexerIter<'a> {
-//     // Track end so an EOF token is emitted once.
-//     done: bool,
-//     lexer: Lexer<'a>,
-// }
-//
-// impl<'a> Iterator for LexerIter<'a> {
-//     type Item = WrenResult<Token>;
-//
-//     fn next(&mut self) -> Option<Self::Item> {
-//         if self.lexer.at_end() {
-//             if self.done {
-//                 None
-//             } else {
-//                 self.done = true;
-//                 self.lexer.next_token()
-//             }
-//         } else {
-//             self.lexer.next_token()
-//         }
-//     }
-// }
 #[cfg(test)]
 mod test {
     use super::*;
