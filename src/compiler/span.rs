@@ -3,13 +3,21 @@ use std::fmt::{self, Debug, Display};
 /// Points to a slice of source code.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Span {
-    pub pos: u32,
-    pub size: u32,
+    pub pos: usize,
+    pub size: usize,
 }
 
 impl Span {
-    pub fn new(pos: u32, size: u32) -> Self {
+    pub fn empty(pos: usize) -> Self {
+        Self { pos, size: 0 }
+    }
+
+    pub fn new(pos: usize, size: usize) -> Self {
         Self { pos, size }
+    }
+
+    pub fn end(&self) -> usize {
+        self.pos + self.size
     }
 }
 

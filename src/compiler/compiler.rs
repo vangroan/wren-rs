@@ -1,3 +1,6 @@
+// TODO: Remove when compiler implementation is done
+#![allow(dead_code)]
+
 use super::lexer::Lexer;
 
 pub struct WrenCompiler<'a> {
@@ -33,4 +36,6 @@ impl<'a> WrenCompiler<'a> {
             enclosing_class: None,
         }
     }
+
+    pub fn compile(&mut self) {}
 }

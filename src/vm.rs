@@ -1,7 +1,7 @@
 pub struct WrenVm {}
 
 impl WrenVm {
-    pub fn interpret(mut self, source: &str) {
+    pub fn interpret(self, _source: &str) {
         todo!()
     }
 }
