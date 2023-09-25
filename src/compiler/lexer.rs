@@ -129,11 +129,9 @@ impl<'src> Lexer<'src> {
             debug_assert!(fragment.starts_with("0x"));
             let fragment = &fragment[2..];
 
-            i64::from_str_radix(fragment, 16)
-                .map(|n| n as f64)
-                .map_err(ParseError::ParseInt)?
+            i64::from_str_radix(fragment, 16).map(|n| n as f64).map_err(ParseInt)?
         } else {
-            f64::from_str(fragment).map_err(ParseError::ParseFloat)?
+            f64::from_str(fragment).map_err(ParseFloat)?
         };
 
         Ok(Token {
@@ -287,11 +285,11 @@ impl<'src> Lexer<'src> {
                 _ => {
                     self.cursor.bump();
                     if matches!(ch, '\x20'..='\x7E') {
-                        Err(ParseError::InvalidCharacter(ch))
+                        Err(InvalidCharacter(ch))
                     } else {
                         // NOTE: The reference Wren implementation processes raw bytes, but
                         // we use Rust's UTF-8 encoded string.
-                        Err(ParseError::InvalidByte(ch))
+                        Err(InvalidByte(ch))
                     }
                 }
             };
@@ -409,7 +407,7 @@ impl<'a> Lexer<'a> {
                     nesting -= 1;
                 }
                 ('\0', _) => {
-                    return Err(ParseError::UnterminatedBlockComment);
+                    return Err(UnterminatedBlockComment);
                 }
                 _ => {
                     self.cursor.bump();
@@ -447,7 +445,7 @@ impl<'a> Lexer<'a> {
 
         loop {
             if self.cursor.at_end() {
-                return Err(ParseError::UnterminatedString);
+                return Err(UnterminatedString);
             }
 
             match self.cursor.char() {
@@ -464,7 +462,7 @@ impl<'a> Lexer<'a> {
                     if self.paren_num < self.parens.len() {
                         if !self.cursor.match_bump('(') {
                             self.consume_string_rest()?;
-                            return Err(ParseError::UnexpectedStringInterpolation);
+                            return Err(UnexpectedStringInterpolation);
                         }
 
                         self.parens[self.paren_num] = 1;
@@ -474,7 +472,7 @@ impl<'a> Lexer<'a> {
                         break;
                     } else {
                         self.consume_string_rest()?;
-                        return Err(ParseError::MaxInterpolationLevel);
+                        return Err(MaxInterpolationLevel);
                     }
                 }
 
@@ -550,7 +548,7 @@ impl<'a> Lexer<'a> {
                         }
                         ch => {
                             self.consume_string_rest()?;
-                            return Err(ParseError::InvalidEscapeChar(ch));
+                            return Err(InvalidEscapeChar(ch));
                         }
                     }
                 }
@@ -569,7 +567,7 @@ impl<'a> Lexer<'a> {
     fn consume_string_rest(&mut self) -> ParseResult<()> {
         loop {
             if self.cursor.at_end() {
-                return Err(ParseError::UnterminatedString);
+                return Err(UnterminatedString);
             }
 
             if self.cursor.char() == '"' {
@@ -743,7 +741,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        char::from_u32(value).ok_or_else(|| ParseError::InvalidUnicode(value))
+        char::from_u32(value).ok_or_else(|| InvalidUnicode(value))
     }
 
     /// Consume hexadecimal number digits until interrupted.
@@ -783,7 +781,7 @@ impl<'a> Lexer<'a> {
             }
 
             if !self.cursor.char().is_ascii_digit() {
-                return Err(ParseError::UnterminatedScientificNotation);
+                return Err(UnterminatedScientificNotation);
             }
 
             self.consume_digits();
@@ -956,7 +954,7 @@ mod test {
         lexer.cursor.bump(); // "
         lexer.cursor.bump(); // /
         lexer.cursor.bump(); // u
-        assert_eq!(lexer.consume_hex_escape(4), Err(ParseError::IncompleteEscape));
+        assert_eq!(lexer.consume_hex_escape(4), Err(IncompleteEscape));
         assert_eq!(lexer.cursor.char(), '\0');
         assert_eq!(lexer.cursor.position(), 7);
     }
