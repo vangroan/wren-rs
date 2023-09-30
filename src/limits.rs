@@ -10,3 +10,10 @@ pub const MAX_INTERPOLATION_NESTING: usize = 8;
 /// value is explicit in the bytecode since [`crate::opcode::Op::Constant`] only takes a single
 /// two-byte argument.
 pub const MAX_CONSTANTS: usize = 1 << 16;
+
+/// The maximum number of module-level variables that may be defined at one time.
+/// This limitation comes from the 16 bits used for the arguments to
+/// `CODE_LOAD_MODULE_VAR` and `CODE_STORE_MODULE_VAR`.
+pub const MAX_MODULE_VARS: usize = 1 << 16;
+
+pub const MAX_SYMBOLS: usize = 1 << 16;

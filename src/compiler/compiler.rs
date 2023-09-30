@@ -2,15 +2,18 @@
 #![allow(dead_code)]
 
 use crate::compiler::token::{KeywordKind, Token, TokenExt, TokenKind};
-use crate::error::{ErrorKind, WrenError, WrenResult};
-use crate::opcode::Op;
+use crate::error::{CompileError, ErrorKind, WrenError, WrenResult};
+use crate::opcode::{Arity, Op};
+use crate::symbol::SymbolTable;
 use std::convert::Infallible;
 
 use super::lexer::Lexer;
 use crate::value::{new_handle, Handle, ObjFn, ObjModule};
 
-pub struct WrenCompiler<'src> {
+pub struct WrenCompiler<'src, 'sym> {
     lexer: Lexer<'src>,
+
+    method_names: &'sym mut SymbolTable,
 
     /// FIXME: Circular dependency between Compiler and VM
     ///
@@ -24,7 +27,7 @@ pub struct WrenCompiler<'src> {
 
     /// The compiler for the function enclosing this one,
     /// or `None` if it's the top module level.
-    parent: Option<Box<WrenCompiler<'src>>>,
+    // parent: Option<Box<WrenCompiler<'src>>>,
 
     /// If this is a compiler for a method, then we keep
     /// track of the class enclosing it.
@@ -43,11 +46,12 @@ pub struct WrenCompiler<'src> {
 /// Bookkeeping information for compiling a class definition.
 struct ClassInfo {}
 
-impl<'src> WrenCompiler<'src> {
-    pub fn new(source: &'src str) -> Self {
+impl<'src, 'sym> WrenCompiler<'src, 'sym> {
+    pub fn new(source: &'src str, method_names: &'sym mut SymbolTable) -> Self {
         Self {
             lexer: Lexer::from_source(source),
-            parent: None,
+            method_names,
+            // parent: None,
             enclosing_class: None,
             func: None,
             token: None,
@@ -121,14 +125,14 @@ impl<'src> WrenCompiler<'src> {
         match &self.token {
             Some(token) => Ok(token),
             None => Err(WrenError {
-                kind: ErrorKind::Compile,
+                kind: ErrorKind::Compile(CompileError::UnexpectedEndOfTokens),
             }),
         }
     }
 }
 
 /// Functions that compile tokens.
-impl<'src> WrenCompiler<'src> {
+impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     fn ignore_newlines(&mut self) -> WrenResult<()> {
         while let Some(token) = &self.token {
             if token.kind == TokenKind::Newline {
@@ -347,27 +351,37 @@ impl Associativity {
 }
 
 /// Functions that form the Pratt-parser.
-impl<'src> WrenCompiler<'src> {
+impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     fn compile_expr(&mut self) -> WrenResult<()> {
         self.compile_expr_precedence(Precedence::Lowest)
     }
 
     fn compile_expr_precedence(&mut self, precedence: Precedence) -> WrenResult<()> {
+        println!("compile_expr_precedence {:?} {precedence:?}", self.try_token());
+        let kind = self.try_token()?.kind;
+
         // TODO: Handle assignment expression.
         self.compile_prefix()?;
 
+        println!(
+            "infix token: {:?}; precedence {:?} <= {:?}",
+            self.try_token()?,
+            precedence,
+            Precedence::of(self.try_token()?.kind)
+        );
         while precedence <= Precedence::of(self.try_token()?.kind) {
-            println!("token: {:?}", self.try_token()?);
-            self.next_token()?;
+            println!("infix loop for {kind:?} {precedence:?}");
             self.compile_infix()?;
         }
 
+        println!("compile_expr_precedence return");
         Ok(())
     }
 
     fn compile_prefix(&mut self) -> WrenResult<()> {
         use TokenKind::*;
         let token = self.try_token()?;
+        println!("prefix token: {:?}", token.kind);
 
         match token.kind {
             Number => self.compile_number_literal(),
@@ -378,6 +392,7 @@ impl<'src> WrenCompiler<'src> {
     fn compile_number_literal(&mut self) -> WrenResult<()> {
         debug_assert_eq!(self.token.kind(), Some(TokenKind::Number));
         let token = self.try_token()?;
+        println!("compile_number_literal {:?}", token);
         let value = token.value.num().unwrap().into();
         let constant_id = self.func.as_mut().unwrap().intern_constant(value);
         self.emit_op(Op::Constant(constant_id));
@@ -386,13 +401,66 @@ impl<'src> WrenCompiler<'src> {
     }
 
     fn compile_infix(&mut self) -> WrenResult<()> {
-        todo!("compile_infix")
+        let kind = self.try_token()?.kind;
+        let precedence = Precedence::of(kind);
+        println!("compile_infix token {kind:?}");
+
+        // An infix operator cannot end an expression.
+        self.ignore_newlines()?;
+
+        // Compile the right-hand side.
+        self.next_token()?;
+        self.compile_expr_precedence(precedence + 1)?;
+
+        // Call the operator on the left-hand side's class.
+        let method_name =
+            token_method_name(kind).ok_or_else(|| WrenError::new_compile(CompileError::InvalidOperator))?;
+        let signature = Signature {
+            name: method_name.to_string(),
+            kind: SignatureKind::Method,
+            arity: Arity::new(1),
+        };
+        self.compile_call_signature(signature)
     }
+
+    fn compile_call_signature(&mut self, signature: Signature) -> WrenResult<()> {
+        println!("compile_call_signature {:?}", signature);
+        let symbol = self
+            .method_names
+            .resolve(signature.name.as_str())
+            .ok_or_else(|| WrenError::new_compile(CompileError::SymbolNotFound))?;
+        self.emit_op(Op::Call(signature.arity, symbol));
+        Ok(())
+    }
+}
+
+fn token_method_name(kind: TokenKind) -> Option<&'static str> {
+    use TokenKind::*;
+    println!("token_method_name({kind:?})");
+    match kind {
+        Plus => Some("+"),
+        Minus => Some("-"),
+        Slash => Some("/"),
+        Star => Some("*"),
+        _ => None,
+    }
+}
+
+#[derive(Debug)]
+enum SignatureKind {
+    Method,
+}
+
+#[derive(Debug)]
+struct Signature {
+    name: String,
+    kind: SignatureKind,
+    arity: Arity,
 }
 
 // -------------------------------------------------------------------------------------------------
 /// Functions that emit bytecode instructions.
-impl<'src> WrenCompiler<'src> {
+impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     /// Emit the given instruction to the current function.
     ///
     /// # Panics
@@ -412,7 +480,8 @@ mod test {
 
     #[test]
     fn test_expr() {
-        let mut compiler = WrenCompiler::new("return 7");
+        let mut method_names = SymbolTable::new();
+        let mut compiler = WrenCompiler::new("return 7", &mut method_names);
         let module = new_handle(ObjModule::new("main"));
 
         let obj_fn = compiler.compile(module, false).unwrap();

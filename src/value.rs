@@ -4,9 +4,12 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use crate::error::RuntimeError;
+use crate::error::{RuntimeError, WrenResult};
 use crate::limits::MAX_CONSTANTS;
 use crate::opcode::Op;
+use crate::primitive::PrimitiveFn;
+use crate::symbol::SymbolTable;
+use crate::SymbolId;
 
 /// A reference counted handle with runtime interior mutability.
 ///
@@ -84,12 +87,36 @@ pub enum Value {
     Num(f64),
     Closure(Handle<ObjClosure>),
     Object,
-    Class,
+    Class(Handle<ObjClass>),
+}
+
+impl Value {
+    pub const fn new_false() -> Self {
+        Value::False
+    }
+
+    pub const fn new_num(num: f64) -> Self {
+        Value::Num(num)
+    }
+
+    /// Attempt to cast the value to a number.
+    pub fn try_num(&self) -> Result<f64, RuntimeError> {
+        match self {
+            Self::Num(num) => Ok(*num),
+            _ => Err(RuntimeError::InvalidType),
+        }
+    }
 }
 
 impl From<Handle<ObjClosure>> for Value {
     fn from(closure: Handle<ObjClosure>) -> Self {
         Value::Closure(closure)
+    }
+}
+
+impl From<Handle<ObjClass>> for Value {
+    fn from(class: Handle<ObjClass>) -> Self {
+        Value::Class(class)
     }
 }
 
@@ -115,7 +142,8 @@ impl PartialEq<Self> for Value {
             (False, False) => true,
             (Undefined, Undefined) => true,
             (Num(a), Num(b)) => *a == *b,
-            (Closure(a), Closure(b)) => Rc::ptr_eq(a, b),
+            (Closure(a), Closure(b)) => Handle::ptr_eq(a, b),
+            (Class(a), Class(b)) => Handle::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -142,11 +170,41 @@ pub(crate) enum ObjType {
 
 pub(crate) struct ObjModule {
     name: String,
+    variables: Vec<Value>,
+    var_names: SymbolTable,
 }
 
 impl ObjModule {
     pub fn new(name: impl ToString) -> Self {
-        Self { name: name.to_string() }
+        Self {
+            name: name.to_string(),
+            variables: Vec::new(),
+            var_names: SymbolTable::new(),
+        }
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    pub(crate) fn var_count(&self) -> usize {
+        debug_assert_eq!(self.variables.len(), self.var_names.len());
+        self.variables.len()
+    }
+
+    pub(crate) fn variables(&self) -> &[Value] {
+        self.variables.as_slice()
+    }
+
+    pub(crate) fn insert_var(&mut self, name: impl ToString, value: Value) -> WrenResult<SymbolId> {
+        let symbol_id = self.var_names.insert(name)?;
+        debug_assert_eq!(
+            symbol_id.as_usize(),
+            self.variables.len(),
+            "variable symbol table must correlate with the variable value buffer"
+        );
+        self.variables.push(value);
+        Ok(symbol_id)
     }
 }
 
@@ -420,5 +478,63 @@ impl ObjFiber {
 
     pub(crate) fn top_frame_mut(&mut self) -> Option<&mut CallFrame> {
         self.frames.last_mut()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum Method {
+    /// A primitive native method implemented in Rust in the VM, which returns a [`Value`].
+    ///
+    /// Unlike foreign methods, this can directly manipulate the fiber's stack.
+    PrimitiveValue(PrimitiveFn),
+
+    /// A primitive that handles .call on Fn.
+    FunctionCall,
+
+    /// A externally-defined C method.
+    Foreign,
+
+    /// A normal user-defined method.
+    Block,
+}
+
+#[derive(Debug)]
+pub struct ObjClass {
+    super_class: Option<Handle<ObjClass>>,
+
+    // TODO: Method table can be immutable after compile.
+    methods: Vec<Option<Method>>,
+
+    // The number of fields needed for an instance of this class,
+    // including all of its superclass fields.
+    num_fields: u16,
+
+    // The name of the class.
+    name: String,
+}
+
+impl ObjClass {
+    pub(crate) fn new(name: impl ToString, num_fields: u16) -> Self {
+        Self {
+            super_class: None,
+            methods: Vec::new(),
+            num_fields,
+            name: name.to_string(),
+        }
+    }
+
+    pub(crate) fn bind_method(&mut self, symbol_id: SymbolId, method: Method) {
+        let index = symbol_id.as_usize();
+
+        // Grow the method table so it can include the given symbol.
+        if index >= self.methods.len() {
+            self.methods.extend((self.methods.len()..index + 1).map(|_| None));
+        }
+
+        self.methods[index] = Some(method);
+    }
+
+    pub(crate) fn get_method(&self, symbol_id: SymbolId) -> Option<&Method> {
+        self.methods.get(symbol_id.as_usize()).map(|opt| opt.as_ref()).flatten()
     }
 }

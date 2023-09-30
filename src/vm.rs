@@ -2,9 +2,14 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use crate::compiler::WrenCompiler;
+use crate::core::{initialize_core, BuiltIns};
 use crate::error::{RuntimeError, WrenError, WrenResult};
 use crate::opcode::Op;
-use crate::value::{new_handle, CallFrame, FiberState, Handle, ObjClosure, ObjFiber, ObjFn, ObjModule, Pointer, Value};
+use crate::symbol::SymbolTable;
+use crate::value::{
+    new_handle, CallFrame, FiberState, Handle, Method, ObjClass, ObjClosure, ObjFiber, ObjFn, ObjModule, Pointer, Value,
+};
+use crate::SymbolId;
 
 pub type WrenWriteFn = fn(&mut WrenVm, message: &str);
 pub type WrenErrorFn = fn(&mut WrenVm, message: &str, module_name: &str);
@@ -70,7 +75,11 @@ enum FuncAction {
 
 pub struct WrenVm {
     /// Map of module names to module objects.
-    modules: HashMap<String, Handle<ObjModule>>,
+    pub(crate) modules: HashMap<String, Handle<ObjModule>>,
+
+    pub(crate) method_names: SymbolTable,
+
+    pub(crate) builtins: Option<BuiltIns>,
 
     /// The currently running fiber.
     fiber: Option<Handle<ObjFiber>>,
@@ -85,11 +94,19 @@ pub struct WrenConfig {
 
 impl WrenVm {
     pub fn new(config: WrenConfig) -> Self {
-        Self {
+        let mut vm = Self {
             modules: HashMap::new(),
+            method_names: SymbolTable::new(),
+            // TODO: Figure out how to avoid paying for the Option unwrap in the interpreter loop.
+            builtins: None,
             fiber: None,
             config,
-        }
+        };
+
+        // Important: Builtins must be initiated by the core module.
+        initialize_core(&mut vm).expect("initializing core module");
+
+        vm
     }
 
     pub fn interpret(&mut self, module_name: &str, source: &str) -> WrenResult<Value> {
@@ -118,14 +135,28 @@ impl WrenVm {
     }
 
     fn compile(&mut self, module: Handle<ObjModule>, source: &str, is_expression: bool) -> WrenResult<Handle<ObjFn>> {
-        let mut compiler = WrenCompiler::new(source);
+        let mut compiler = WrenCompiler::new(source, &mut self.method_names);
         compiler.compile(module, is_expression)
     }
 
     fn get_module(&self, module_name: &str) -> Option<Handle<ObjModule>> {
         self.modules.get(module_name).cloned()
     }
+
+    #[inline(always)]
+    fn class_by_value(&self, value: &Value) -> Handle<ObjClass> {
+        // FIXME: Get rid of Option
+        let core = self.builtins.as_ref().unwrap();
+
+        match value {
+            Value::Num(_) => core.num_class.clone(),
+            _ => todo!("class_by_value"),
+        }
+    }
 }
+
+// ============================================================================
+// Interpreter
 
 /// Execute top level interpreter loop.
 fn run_interpreter(vm: &mut WrenVm, fiber: Handle<ObjFiber>) -> WrenResult<Value> {
@@ -137,7 +168,7 @@ fn run_interpreter(vm: &mut WrenVm, fiber: Handle<ObjFiber>) -> WrenResult<Value
         // Keep a pointer to the fiber to avoid the borrow bookkeeping.
         let fiber = &mut *fiber.borrow_mut();
 
-        match run_fiber(fiber) {
+        match run_fiber(vm, fiber) {
             FiberAction::Call => todo!(),
             FiberAction::Try => todo!(),
             FiberAction::Yield => todo!(),
@@ -166,14 +197,23 @@ fn run_interpreter(vm: &mut WrenVm, fiber: Handle<ObjFiber>) -> WrenResult<Value
 }
 
 /// Execute the given fiber.
-fn run_fiber(fiber: &mut ObjFiber) -> FiberAction {
+fn run_fiber(vm: &mut WrenVm, fiber: &mut ObjFiber) -> FiberAction {
     loop {
-        let ObjFiber { stack, frames, .. } = fiber;
-        let frame = frames.last_mut().unwrap();
+        // let ObjFiber { stack, frames, .. } = fiber;
+        // Remove the current frame so we can mutably borrow it without conflicting with fiber.
+        let mut frame = fiber.frames.pop().unwrap();
 
-        match run_op_loop(stack, frame) {
+        match run_op_loop(vm, fiber, &mut frame) {
             Ok(FuncAction::Call) => {
+                // Create the new frame.
+                let mut temp_frame: CallFrame = todo!();
+
+                // Put the current frame back onto the stack.
+                std::mem::swap(&mut frame, &mut temp_frame);
+
                 // Setup call stack for next iteration.
+                fiber.frames.push(temp_frame);
+
                 todo!()
             }
             Ok(FuncAction::CallForeign) => {
@@ -182,9 +222,9 @@ fn run_fiber(fiber: &mut ObjFiber) -> FiberAction {
                 todo!()
             }
             Ok(FuncAction::Return(value)) => {
-                frames.pop();
+                // Note: We leave the frame off the call stack, so no explicit pop is needed.
 
-                if frames.is_empty() {
+                if fiber.frames.is_empty() {
                     // TODO: Close upvalues that are still in scope.
                     return FiberAction::Return(value);
                 } else {
@@ -204,7 +244,7 @@ fn run_fiber(fiber: &mut ObjFiber) -> FiberAction {
 }
 
 /// Execute the instruction loop.
-fn run_op_loop(stack: &mut Vec<Value>, frame: &mut CallFrame) -> Result<FuncAction, RuntimeError> {
+fn run_op_loop(vm: &mut WrenVm, fiber: &mut ObjFiber, frame: &mut CallFrame) -> Result<FuncAction, RuntimeError> {
     let mut pc = frame.pc;
     let func_rc = frame.closure.borrow().func.clone();
     let func = func_rc.borrow();
@@ -222,15 +262,37 @@ fn run_op_loop(stack: &mut Vec<Value>, frame: &mut CallFrame) -> Result<FuncActi
         let op = ops.get(pc).cloned().unwrap();
         pc += 1;
 
+        if cfg!(feature = "trace_opcodes") {
+            let prev_pc = pc - 1;
+            println!("{prev_pc:06X} : {op:?}");
+        }
+
         match op {
             Op::NoOp => {
                 todo!()
             }
+            Op::Call(arity, symbol) => {
+                // Add one for the implicit receiver argument.
+                let num_args = arity.as_usize() + 1;
+                let recv_offset = fiber.stack.len() - num_args;
+                let receiver = &fiber.stack[recv_offset];
+                let obj_class_handle = vm.class_by_value(receiver);
+                let obj_class = &*obj_class_handle.borrow();
+                match call_method(vm, fiber, obj_class, symbol, num_args)? {
+                    FuncAction::Return(value) => {
+                        fiber.stack.truncate(recv_offset + 1);
+                        fiber.stack[recv_offset] = value;
+                    }
+                    action => {
+                        return Ok(action);
+                    }
+                }
+            }
             Op::Constant(id) => {
-                stack.push(constants[id.as_usize()].clone());
+                fiber.stack.push(constants[id.as_usize()].clone());
             }
             Op::Return => {
-                let value = stack.pop().unwrap_or_default();
+                let value = fiber.stack.pop().unwrap_or_default();
                 save!(frame, pc);
                 return Ok(FuncAction::Return(value));
             }
@@ -241,6 +303,29 @@ fn run_op_loop(stack: &mut Vec<Value>, frame: &mut CallFrame) -> Result<FuncActi
                 todo!()
             }
         }
+    }
+}
+
+fn call_method(
+    vm: &mut WrenVm,
+    fiber: &ObjFiber,
+    obj_class: &ObjClass,
+    symbol: SymbolId,
+    num_args: usize,
+) -> Result<FuncAction, RuntimeError> {
+    let method = obj_class.get_method(symbol).ok_or_else(|| RuntimeError::MethodNotFound)?;
+
+    match method {
+        // Call to native Rust function through a safe pointer.
+        Method::PrimitiveValue(fn_ptr) => {
+            let offset = fiber.stack.len() - num_args;
+            let args = &fiber.stack[offset..];
+
+            fn_ptr(vm, args).map(FuncAction::Return)
+        }
+        Method::FunctionCall => todo!("function call"),
+        Method::Foreign => todo!("foreign call"),
+        Method::Block => todo!("block call"),
     }
 }
 
@@ -292,5 +377,15 @@ mod test {
 
         let value = vm.interpret("main", r"return 745635").expect("interpret");
         println!("Return value: {value:?}");
+    }
+
+    #[test]
+    fn test_num_add() {
+        let mut vm = WrenVm::new(create_test_config());
+
+        let value = vm.interpret("main", r"return 7 + 11 + 42").expect("interpret");
+        println!("Return value: {value:?}");
+
+        assert_eq!(value, Value::new_num(60.0))
     }
 }

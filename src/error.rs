@@ -15,7 +15,7 @@ pub struct WrenError {
 #[derive(Debug)]
 pub enum ErrorKind {
     Parse(ParseError),
-    Compile,
+    Compile(CompileError),
     Runtime(RuntimeError),
 }
 
@@ -54,12 +54,30 @@ pub enum ParseError {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub enum CompileError {
+    MaxSymbols,
+    SymbolExists,
+    SymbolNotFound,
+    UnexpectedEndOfTokens,
+    InvalidOperator,
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub enum RuntimeError {
     StackOverflow,
     StackUnderflow,
+    InvalidSlot(u8),
+    InvalidType,
+    MethodNotFound,
 }
 
 impl WrenError {
+    pub(crate) fn new_compile(kind: CompileError) -> Self {
+        Self {
+            kind: ErrorKind::Compile(kind),
+        }
+    }
+
     pub(crate) fn new_runtime(kind: RuntimeError) -> Self {
         Self {
             kind: ErrorKind::Runtime(kind),
@@ -69,13 +87,14 @@ impl WrenError {
 
 impl Display for WrenError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        use CompileError as CE;
         use ErrorKind as EK;
         use ParseError as PE;
         use RuntimeError as RE;
 
         let prefix = match self.kind {
             EK::Parse(_) => "parse",
-            EK::Compile => "compile",
+            EK::Compile(_) => "compile",
             EK::Runtime(_) => "runtime",
         };
 
@@ -102,10 +121,19 @@ impl Display for WrenError {
                 PE::UnexpectedChar => write!(f, "unexpected character"),
                 PE::UnexpectedEOF => write!(f, "unexpected end-of-file"),
             },
-            EK::Compile => write!(f, "todo"),
+            EK::Compile(err) => match err {
+                CE::MaxSymbols => write!(f, "symbol table may only contain {MAX_SYMBOLS} entries"),
+                CE::SymbolExists => write!(f, "symbol already defined"),
+                CE::SymbolNotFound => write!(f, "symbol not found"),
+                CE::UnexpectedEndOfTokens => write!(f, "unexpected end of tokens"),
+                CE::InvalidOperator => write!(f, "value does not support operator"),
+            },
             EK::Runtime(err) => match err {
                 RE::StackOverflow => write!(f, "stack overflow"),
                 RE::StackUnderflow => write!(f, "stack underflow"),
+                RE::InvalidSlot(slot_id) => write!(f, "invalid slot {slot_id}"),
+                RE::InvalidType => write!(f, "invalid value type"),
+                RE::MethodNotFound => write!(f, "method not found"),
             },
         }
     }
