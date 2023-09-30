@@ -123,6 +123,26 @@ impl Token {
     }
 }
 
+pub(crate) trait TokenExt {
+    fn kind(&self) -> Option<TokenKind>;
+    fn keyword(&self) -> Option<KeywordKind>;
+}
+
+impl TokenExt for Option<Token> {
+    #[inline(always)]
+    fn kind(&self) -> Option<TokenKind> {
+        self.as_ref().map(|token| token.kind)
+    }
+
+    #[inline(always)]
+    fn keyword(&self) -> Option<KeywordKind> {
+        match self.kind() {
+            Some(TokenKind::Keyword(kw)) => Some(kw),
+            Some(_) | None => None,
+        }
+    }
+}
+
 impl LiteralValue {
     pub fn num(&self) -> Option<f64> {
         match self {

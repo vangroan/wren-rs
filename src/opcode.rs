@@ -1,9 +1,11 @@
+use crate::value::ConstantId;
+
 #[derive(Debug, Clone)]
 pub(crate) enum Op {
     NoOp,
 
     /// Push the constant value with the given index onto the stack.
-    Constant(u16),
+    Constant(ConstantId),
 
     /// Exit from the current function and return the value on the top of the stack.
     Return,

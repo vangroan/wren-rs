@@ -60,6 +60,21 @@ impl<T> DerefMut for Pointer<T> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConstantId(pub(crate) u16);
+
+impl ConstantId {
+    pub(crate) fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl From<u16> for ConstantId {
+    fn from(value: u16) -> Self {
+        ConstantId(value)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Value {
     Null,
@@ -169,21 +184,23 @@ impl ObjFn {
     /// Inserts the constant if it doesn't exist.
     ///
     /// Returns index of constant.
-    pub(crate) fn intern_constant(&mut self, value: Value) -> usize {
+    pub(crate) fn intern_constant(&mut self, value: Value) -> ConstantId {
         if self.constants.len() >= MAX_CONSTANTS {
             panic!("maximum function constants reached");
         }
 
         // Scan the constant table.
         let found_index = self.constants.iter().position(|el| &value == el);
-        match found_index {
+        let index = match found_index {
             Some(index) => index,
             None => {
                 let index = self.constants.len();
                 self.constants.push(value);
                 index
             }
-        }
+        };
+
+        ConstantId(index as u16)
     }
 
     #[inline(always)]

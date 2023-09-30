@@ -94,7 +94,7 @@ impl WrenVm {
 
     pub fn interpret(&mut self, module_name: &str, source: &str) -> WrenResult<Value> {
         let closure = new_handle(self.compile_in_module(module_name, source, false)?);
-        let fiber = new_handle(ObjFiber::new(Some(closure))?);
+        let fiber = new_handle(ObjFiber::new(Some(closure)).map_err(WrenError::new_runtime)?);
         run_interpreter(self, fiber)
     }
 
@@ -226,8 +226,8 @@ fn run_op_loop(stack: &mut Vec<Value>, frame: &mut CallFrame) -> Result<FuncActi
             Op::NoOp => {
                 todo!()
             }
-            Op::Constant(idx) => {
-                stack.push(constants[idx as usize].clone());
+            Op::Constant(id) => {
+                stack.push(constants[id.as_usize()].clone());
             }
             Op::Return => {
                 let value = stack.pop().unwrap_or_default();
@@ -274,7 +274,7 @@ mod test {
         // Construct a closure as the compiler would
         let mut obj_fn = ObjFn::new();
         obj_fn.intern_constant(7.0.into());
-        obj_fn.push_op(Op::Constant(0), 0);
+        obj_fn.push_op(Op::Constant(0.into()), 0);
         obj_fn.push_op(Op::Return, 0);
         obj_fn.push_op(Op::End, 0);
 
@@ -283,6 +283,14 @@ mod test {
         let fiber = ObjFiber::new(Some(new_handle(closure))).unwrap();
 
         let value = run_interpreter(&mut vm, new_handle(fiber)).unwrap();
+        println!("Return value: {value:?}");
+    }
+
+    #[test]
+    fn test_with_compile() {
+        let mut vm = WrenVm::new(create_test_config());
+
+        let value = vm.interpret("main", r"return 745635").expect("interpret");
         println!("Return value: {value:?}");
     }
 }
