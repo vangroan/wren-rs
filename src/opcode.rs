@@ -1,5 +1,10 @@
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Op {
+    NoOp,
+
+    /// Push the constant value with the given index onto the stack.
+    Constant(u16),
+
     /// Exit from the current function and return the value on the top of the stack.
     Return,
 
@@ -23,6 +28,8 @@ impl Op {
         use Op::*;
 
         match self {
+            NoOp => 0,
+            Constant(_) => 1,
             Return => 0,
             EndModule => 1,
             End => -2,

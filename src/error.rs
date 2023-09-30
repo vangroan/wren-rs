@@ -59,6 +59,14 @@ pub enum RuntimeError {
     StackUnderflow,
 }
 
+impl WrenError {
+    pub(crate) fn new_runtime(kind: RuntimeError) -> Self {
+        Self {
+            kind: ErrorKind::Runtime(kind),
+        }
+    }
+}
+
 impl Display for WrenError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         use ErrorKind as EK;
