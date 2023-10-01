@@ -17,3 +17,5 @@ pub const MAX_CONSTANTS: usize = 1 << 16;
 pub const MAX_MODULE_VARS: usize = 1 << 16;
 
 pub const MAX_SYMBOLS: usize = 1 << 16;
+
+pub const MAX_VARIABLE_NAME: usize = 64;

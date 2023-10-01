@@ -4,8 +4,8 @@ use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use crate::error::{RuntimeError, WrenResult};
-use crate::limits::MAX_CONSTANTS;
+use crate::error::{CompileError, RuntimeError, WrenError, WrenResult};
+use crate::limits::*;
 use crate::opcode::Op;
 use crate::primitive::PrimitiveFn;
 use crate::symbol::SymbolTable;
@@ -98,6 +98,10 @@ impl Value {
 
     pub const fn new_num(num: f64) -> Self {
         Value::Num(num)
+    }
+
+    pub const fn is_num(&self) -> bool {
+        matches!(self, Self::Num(_))
     }
 
     /// Attempt to cast the value to a number.
@@ -220,6 +224,8 @@ impl ObjModule {
         self.variables.as_slice()
     }
 
+    /// Directly insert a variable into the module's symbol table, without scope checking
+    /// or ensuring the name doesn't exist.
     pub(crate) fn insert_var(&mut self, name: impl ToString, value: Value) -> WrenResult<SymbolId> {
         let symbol_id = self.var_names.insert(name)?;
         debug_assert_eq!(
@@ -229,6 +235,38 @@ impl ObjModule {
         );
         self.variables.push(value);
         Ok(symbol_id)
+    }
+
+    pub(crate) fn define_var(&mut self, name: impl ToString, value: Value) -> WrenResult<SymbolId> {
+        if self.var_names.len() >= MAX_MODULE_VARS {
+            return Err(WrenError::new_compile(CompileError::MaxModuleVariables));
+        }
+
+        let var_name = name.to_string();
+
+        // Check if the variable is already implicitly declared.
+        match self.var_names.resolve(var_name.as_str()) {
+            None => {
+                // Brand new variable.
+                self.insert_var(name, value)
+            }
+            Some(symbol) => {
+                // The variable already exists.
+                let existing = &self.variables[symbol.as_usize()];
+
+                // It could be a forward declared variable, in which
+                // case the value holds the line number where the variable
+                // was used before it was declared.
+                if let Value::Num(line) = existing {
+                    return Err(WrenError::new_compile(CompileError::ForwardVariable(
+                        var_name,
+                        *line as usize,
+                    )));
+                }
+
+                return Err(WrenError::new_compile(CompileError::ModuleVariableExists(var_name)));
+            }
+        }
     }
 
     pub(crate) fn find_var(&self, var_name: &str) -> Option<&Value> {

@@ -5,15 +5,33 @@ use crate::compiler::token::{KeywordKind, Token, TokenExt, TokenKind};
 use crate::error::{CompileError, ErrorKind, WrenError, WrenResult};
 use crate::opcode::{Arity, Op};
 use crate::symbol::SymbolTable;
+use crate::SymbolId;
 use std::convert::Infallible;
 
 use super::lexer::Lexer;
-use crate::value::{new_handle, Handle, ObjFn, ObjModule};
+use crate::value::{new_handle, Handle, ObjFn, ObjModule, Value};
 
 pub struct WrenCompiler<'src, 'sym> {
     lexer: Lexer<'src>,
 
     method_names: &'sym mut SymbolTable,
+
+    locals: Vec<Local>,
+
+    /// The current number of slots (locals and temporaries) in use.
+    ///
+    /// We use this and maxSlots to track the maximum number of additional slots
+    /// a function may need while executing. When the function is called, the
+    /// fiber will check to ensure its stack has enough room to cover that worst
+    /// case and grow the stack if needed.
+    ///
+    /// This value here doesn't include parameters to the function. Since those
+    /// are already pushed onto the stack by the caller and tracked there, we
+    /// don't need to double count them here.
+    num_slots: usize,
+
+    /// The current level of block scope nesting, where zero is no nesting.
+    scope_depth: ScopeDepth,
 
     /// FIXME: Circular dependency between Compiler and VM
     ///
@@ -29,6 +47,9 @@ pub struct WrenCompiler<'src, 'sym> {
     /// or `None` if it's the top module level.
     // parent: Option<Box<WrenCompiler<'src>>>,
 
+    /// The Wren module currently being compiled.
+    module: Handle<ObjModule>,
+
     /// If this is a compiler for a method, then we keep
     /// track of the class enclosing it.
     enclosing_class: Option<ClassInfo>,
@@ -43,15 +64,51 @@ pub struct WrenCompiler<'src, 'sym> {
     doc_comments: Vec<Token>,
 }
 
+#[derive(Debug)]
+struct Local {
+    /// The name of the local variable as it appears in source code.
+    name: String,
+
+    /// The depth in the scope chain that this variable was declared at. Zero is
+    /// the outermost scope-parameters for a method, or the first local block in
+    /// top level code. One is the scope within that, etc.
+    depth: usize,
+
+    /// If this local variable is being used as an upvalue.
+    is_upvalue: bool,
+}
+
 /// Bookkeeping information for compiling a class definition.
 struct ClassInfo {}
 
+#[derive(Debug)]
+enum ScopeDepth {
+    Module,
+    Block(usize),
+}
+
+#[derive(Debug)]
+enum Scope {
+    Local,
+    Upvalue,
+    Module,
+}
+
+struct Variable {
+    symbol: SymbolId,
+    scope: Scope,
+}
+
 impl<'src, 'sym> WrenCompiler<'src, 'sym> {
-    pub fn new(source: &'src str, method_names: &'sym mut SymbolTable) -> Self {
+    pub fn new(module: Handle<ObjModule>, source: &'src str, method_names: &'sym mut SymbolTable) -> Self {
         Self {
             lexer: Lexer::from_source(source),
             method_names,
+            locals: Vec::new(),
+            num_slots: 0,
+            scope_depth: ScopeDepth::Module,
             // parent: None,
+            module,
             enclosing_class: None,
             func: None,
             token: None,
@@ -129,6 +186,56 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
             }),
         }
     }
+
+    /// Declares a variable in the current scope whose name is the given token.
+    fn declare_variable(&mut self, token: &Token) -> WrenResult<Variable> {
+        let fragment = token.fragment(self.lexer.source());
+
+        match self.scope_depth {
+            ScopeDepth::Module => {
+                let symbol = self.module.borrow_mut().define_var(fragment, Value::Null)?;
+                Ok(Variable {
+                    symbol,
+                    scope: match self.scope_depth {
+                        ScopeDepth::Module => Scope::Module,
+                        ScopeDepth::Block(_) => Scope::Local,
+                    },
+                })
+            }
+            ScopeDepth::Block(scope_depth) => {
+                // Check if this variable is already declared in this scope.
+                //
+                // Outer scopes are OK, because they will be shadowed by this one.
+                for local in self.locals.iter().rev() {
+                    // Scanning variables back to front.
+                    // Outer scopes are earlier in the vector, more local scopes are later.
+                    if local.depth < scope_depth {
+                        break;
+                    }
+
+                    if local.name == fragment {
+                        return Err(WrenError::new_compile(CompileError::ModuleVariableExists(
+                            fragment.to_string(),
+                        )));
+                    }
+                }
+
+                self.add_local(fragment);
+
+                todo!("Function can return both module variable symbol and local stack offset!?")
+            }
+        }
+    }
+
+    fn add_local(&mut self, name: impl ToString) {
+
+        //   Local* local = &compiler->locals[compiler->numLocals];
+        //   local->name = name;
+        //   local->length = length;
+        //   local->depth = compiler->scopeDepth;
+        //   local->isUpvalue = false;
+        //   return compiler->numLocals++;
+    }
 }
 
 /// Functions that compile tokens.
@@ -186,6 +293,17 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     }
 
     fn compile_class(&mut self) -> WrenResult<()> {
+        debug_assert_eq!(self.token.keyword(), Some(KeywordKind::Class));
+
+        self.next_token()?; // class
+
+        // Create a variable to store the class in.
+
+        // name
+
+        // parent
+        // body
+
         todo!()
     }
 

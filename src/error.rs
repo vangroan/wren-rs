@@ -56,6 +56,14 @@ pub enum ParseError {
 #[derive(Debug, Eq, PartialEq)]
 pub enum CompileError {
     MaxSymbols,
+    MaxModuleVariables,
+    /// Scope variable already defined.
+    ScopeVariableExists(String),
+    /// Module variable already defined.
+    ModuleVariableExists(String),
+    /// Forward variable declaration, meaning it was used before it was declared.
+    /// Holds the line number where the usage was recorded.
+    ForwardVariable(String, usize),
     SymbolExists,
     SymbolNotFound,
     UnexpectedEndOfTokens,
@@ -123,6 +131,13 @@ impl Display for WrenError {
             },
             EK::Compile(err) => match err {
                 CE::MaxSymbols => write!(f, "symbol table may only contain {MAX_SYMBOLS} entries"),
+                CE::MaxModuleVariables => write!(f, "module may only contain {MAX_MODULE_VARS} variables"),
+                CE::ScopeVariableExists(name) => write!(f, "scope variable '{name}' already defined"),
+                CE::ModuleVariableExists(name) => write!(f, "module variable '{name}' already defined"),
+                CE::ForwardVariable(name, line) => write!(
+                    f,
+                    "variable '{name}' referenced before this definition (first use at line {line})"
+                ),
                 CE::SymbolExists => write!(f, "symbol already defined"),
                 CE::SymbolNotFound => write!(f, "symbol not found"),
                 CE::UnexpectedEndOfTokens => write!(f, "unexpected end of tokens"),
