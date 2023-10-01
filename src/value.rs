@@ -15,7 +15,7 @@ use crate::SymbolId;
 ///
 /// Bad for performance, but good enough to get the VM working
 /// until we can implement proper garbage collection.
-pub type Handle<T: 'static> = Rc<RefCell<T>>;
+pub type Handle<T> = Rc<RefCell<T>>;
 
 pub fn new_handle<T: 'static>(obj: T) -> Handle<T> {
     Rc::new(RefCell::new(obj))
@@ -85,6 +85,7 @@ pub enum Value {
     False,
     Undefined,
     Num(f64),
+    Str(String),
     Closure(Handle<ObjClosure>),
     Object,
     Class(Handle<ObjClass>),
@@ -103,6 +104,21 @@ impl Value {
     pub fn try_num(&self) -> Result<f64, RuntimeError> {
         match self {
             Self::Num(num) => Ok(*num),
+            _ => Err(RuntimeError::InvalidType),
+        }
+    }
+
+    /// Attempt to cast the value to a string.
+    pub fn try_str(&self) -> Result<&str, RuntimeError> {
+        match self {
+            Self::Str(string) => Ok(string.as_str()),
+            _ => Err(RuntimeError::InvalidType),
+        }
+    }
+
+    pub fn try_class(&self) -> Result<&Handle<ObjClass>, RuntimeError> {
+        match self {
+            Self::Class(class) => Ok(class),
             _ => Err(RuntimeError::InvalidType),
         }
     }
@@ -168,6 +184,14 @@ pub(crate) enum ObjType {
     Upvalue,
 }
 
+/// Common object header.
+#[derive(Debug)]
+pub(crate) struct Obj {
+    kind: ObjType,
+    // FIXME: Does every object have a metaclass? Can we git rid of this Option?
+    pub(crate) class: Option<Handle<ObjClass>>,
+}
+
 pub(crate) struct ObjModule {
     name: String,
     variables: Vec<Value>,
@@ -205,6 +229,12 @@ impl ObjModule {
         );
         self.variables.push(value);
         Ok(symbol_id)
+    }
+
+    pub(crate) fn find_var(&self, var_name: &str) -> Option<&Value> {
+        self.var_names
+            .resolve(var_name)
+            .and_then(|index| self.variables.get(index.as_usize()))
     }
 }
 
@@ -481,7 +511,7 @@ impl ObjFiber {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Method {
     /// A primitive native method implemented in Rust in the VM, which returns a [`Value`].
     ///
@@ -500,10 +530,13 @@ pub(crate) enum Method {
 
 #[derive(Debug)]
 pub struct ObjClass {
+    pub(crate) obj: Obj,
     super_class: Option<Handle<ObjClass>>,
 
     // TODO: Method table can be immutable after compile.
     methods: Vec<Option<Method>>,
+
+    is_foreign: bool,
 
     // The number of fields needed for an instance of this class,
     // including all of its superclass fields.
@@ -516,25 +549,63 @@ pub struct ObjClass {
 impl ObjClass {
     pub(crate) fn new(name: impl ToString, num_fields: u16) -> Self {
         Self {
+            obj: Obj {
+                kind: ObjType::Class,
+                class: None,
+            },
             super_class: None,
             methods: Vec::new(),
+            is_foreign: false,
             num_fields,
             name: name.to_string(),
         }
     }
 
-    pub(crate) fn bind_method(&mut self, symbol_id: SymbolId, method: Method) {
-        let index = symbol_id.as_usize();
-
-        // Grow the method table so it can include the given symbol.
+    /// Grow the method table so it can include the given index.
+    fn grow_method_table(&mut self, index: usize) {
         if index >= self.methods.len() {
             self.methods.extend((self.methods.len()..index + 1).map(|_| None));
         }
+    }
 
+    pub(crate) fn bind_method(&mut self, symbol_id: SymbolId, method: Method) {
+        let index = symbol_id.as_usize();
+        self.grow_method_table(index);
         self.methods[index] = Some(method);
     }
 
     pub(crate) fn get_method(&self, symbol_id: SymbolId) -> Option<&Method> {
         self.methods.get(symbol_id.as_usize()).map(|opt| opt.as_ref()).flatten()
+    }
+
+    pub(crate) fn bind_super_class(&mut self, super_class: Handle<ObjClass>) {
+        if self.is_foreign {
+            // FIXME: Can this happen in because of a script? Does it need to be RuntimeError?
+            panic!("foreign class cannot inherit from a class with fields")
+        }
+
+        // Include the superclass in the total number of fields.
+        self.num_fields += super_class.borrow().num_fields;
+
+        // Inherit methods from its superclass.
+        {
+            let super_class_ref = super_class.borrow();
+            let super_methods = super_class_ref.methods.as_slice();
+            self.grow_method_table(if super_methods.is_empty() {
+                0
+            } else {
+                super_methods.len() - 1
+            });
+            for (index, method) in super_methods.iter().enumerate() {
+                // Bind method without guards, for performance.
+                self.methods[index] = method.clone();
+            }
+        }
+
+        self.super_class = Some(super_class);
+    }
+
+    pub(crate) fn unbind_super_class(&mut self) {
+        self.super_class = None;
     }
 }

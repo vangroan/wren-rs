@@ -1,5 +1,5 @@
 //! Wren's Core module of builtins.
-use crate::error::{RuntimeError, WrenResult};
+use crate::error::{RuntimeError, WrenError, WrenResult};
 use crate::limits::MAX_MODULE_VARS;
 use crate::primitive::{PrimitiveFn, PrimitiveResult};
 use crate::value::{new_handle, Handle, Method, ObjClass, ObjModule, Value};
@@ -8,6 +8,10 @@ use crate::SymbolId;
 
 const CORE_MODULE_NAME: &str = "<core>";
 
+// TODO: Use upstream Wren's Core module when we can compile and interpret the whole language.
+// const CORE_MODULE_SCRIPT: &str = include_str!("../wren-c/src/vm/wren_core.wren");
+const CORE_MODULE_SCRIPT: &str = include_str!("wren_core.wren");
+
 /// Load the core module's classes and functions into the given module.
 pub(crate) fn load_core_module(module: &mut ObjModule) -> WrenResult<()> {
     todo!()
@@ -15,6 +19,7 @@ pub(crate) fn load_core_module(module: &mut ObjModule) -> WrenResult<()> {
 
 pub(crate) struct BuiltIns {
     pub(crate) obj_class: Handle<ObjClass>,
+    pub(crate) cls_class: Handle<ObjClass>,
     pub(crate) num_class: Handle<ObjClass>,
 }
 
@@ -40,19 +45,95 @@ pub(crate) fn initialize_core(vm: &mut WrenVm) -> WrenResult<()> {
     }
 
     // ----------------------------------------------------------------------------------
+    // Class
+    let cls_class_handle = define_class(core_module, "Class")?;
+    {
+        let cls_class = &mut *cls_class_handle.borrow_mut();
+        cls_class.bind_super_class(obj_class_handle.clone());
+    }
+
+    // ----------------------------------------------------------------------------------
+    // Object Metaclass
+    let obj_meta_class = define_class(core_module, "Object metaclass")?;
+
+    // Wire up the metaclass relationships now that all three classes are built.
+    // Note: This creates circular references that will leak heap memory.
+    obj_class_handle.borrow_mut().obj.class = Some(obj_meta_class.clone());
+    obj_meta_class.borrow_mut().obj.class = Some(cls_class_handle.clone());
+    cls_class_handle.borrow_mut().obj.class = Some(cls_class_handle.clone());
+
+    obj_class_handle.borrow_mut().bind_super_class(cls_class_handle.clone());
+
+    // The core class diagram ends up looking like this, where single lines point
+    // to a class's superclass, and double lines point to its metaclass:
+    //
+    //        .------------------------------------. .====.
+    //        |                  .---------------. | #    #
+    //        v                  |               v | v    #
+    //   .---------.   .-------------------.   .-------.  #
+    //   | Object  |==>| Object metaclass  |==>| Class |=="
+    //   '---------'   '-------------------'   '-------'
+    //        ^                                 ^ ^ ^ ^
+    //        |                  .--------------' # | #
+    //        |                  |                # | #
+    //   .---------.   .-------------------.      # | # -.
+    //   |  Base   |==>|  Base metaclass   |======" | #  |
+    //   '---------'   '-------------------'        | #  |
+    //        ^                                     | #  |
+    //        |                  .------------------' #  | Example classes
+    //        |                  |                    #  |
+    //   .---------.   .-------------------.          #  |
+    //   | Derived |==>| Derived metaclass |=========="  |
+    //   '---------'   '-------------------'            -'
+
+    // The rest of the classes can now be defined normally.
+    // vm.interpret(CORE_MODULE_NAME, CORE_MODULE_SCRIPT)?;
+
+    // ----------------------------------------------------------------------------------
     // Number
     let num_class_handle = define_class(core_module, "Num")?;
     {
         let num_class = &mut *num_class_handle.borrow_mut();
-        bind_primitive(vm, num_class, "+", num_plus)?;
+        bind_primitive(vm, num_class, "+(_)", num_plus)?;
+        bind_primitive(vm, num_class, "-(_)", num_minus)?;
+        bind_primitive(vm, num_class, "*(_)", num_multiply)?;
+        bind_primitive(vm, num_class, "/(_)", num_div)?;
+    }
+
+    // ----------------------------------------------------------------------------------
+    // System
+    let sys_class_handle = define_class(core_module, "System")?;
+    {
+        let sys_class = &mut *sys_class_handle.borrow_mut();
+        bind_primitive(vm, sys_class, "writeString_(_)", sys_write_string)?;
     }
 
     vm.builtins = Some(BuiltIns {
         obj_class: obj_class_handle,
+        cls_class: cls_class_handle,
         num_class: num_class_handle,
     });
 
     Ok(())
+}
+
+pub(crate) fn teardown_core(vm: &mut WrenVm) {
+    // Unlink circular references in object model
+    if let Some(builtins) = vm.builtins.take() {
+        if let Some(obj_meta_class) = builtins.obj_class.borrow().obj.class.clone() {
+            let mut obj_meta_class_ref = obj_meta_class.borrow_mut();
+            obj_meta_class_ref.obj.class = None;
+            obj_meta_class_ref.unbind_super_class();
+        }
+
+        builtins.obj_class.borrow_mut().obj.class = None;
+        builtins.cls_class.borrow_mut().obj.class = None;
+        builtins.num_class.borrow_mut().obj.class = None;
+
+        builtins.obj_class.borrow_mut().unbind_super_class();
+        builtins.cls_class.borrow_mut().unbind_super_class();
+        builtins.cls_class.borrow_mut().unbind_super_class();
+    }
 }
 
 pub(crate) fn define_class(module: &mut ObjModule, class_name: impl ToString) -> WrenResult<Handle<ObjClass>> {
@@ -73,6 +154,16 @@ pub(crate) fn define_variable(module: &mut ObjModule, var_name: impl ToString, v
     module.insert_var(var_name, value)
 }
 
+pub(crate) fn find_class_var(module: &mut ObjModule, var_name: impl AsRef<str>) -> WrenResult<Handle<ObjClass>> {
+    module
+        .find_var(var_name.as_ref())
+        .unwrap()
+        .try_class()
+        .cloned()
+        .map_err(|err| WrenError::new_runtime(err))
+}
+
+/// Bind a native Rust function to a class as a method.
 pub(crate) fn bind_primitive(
     vm: &mut WrenVm,
     class_obj: &mut ObjClass,
@@ -103,11 +194,45 @@ fn object_not(_vm: &mut WrenVm, _args: &[Value]) -> PrimitiveResult {
 // ----------------------------------------------------------------------------
 // Number
 
-fn num_plus(_vm: &mut WrenVm, args: &[Value]) -> PrimitiveResult {
-    let arg0 = get_slot!(args, 0)?;
-    let arg1 = get_slot!(args, 1)?;
-    match (arg0, arg1) {
-        (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a + b)),
-        _ => Err(RuntimeError::InvalidType),
+macro_rules! num_bin_op {
+    ($args:path, $arg0:ident $op:tt $arg1:ident) => {
+        {
+            let $arg0 = get_slot!($args, 0)?;
+            let $arg1 = get_slot!($args, 1)?;
+            match ($arg0, $arg1) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a $op b)),
+                _ => Err(RuntimeError::InvalidType),
+            }
+        }
     }
+}
+
+fn num_plus(_vm: &mut WrenVm, args: &[Value]) -> PrimitiveResult {
+    num_bin_op!(args, arg0 + arg1)
+}
+
+fn num_minus(_vm: &mut WrenVm, args: &[Value]) -> PrimitiveResult {
+    num_bin_op!(args, arg0 - arg1)
+}
+
+fn num_multiply(_vm: &mut WrenVm, args: &[Value]) -> PrimitiveResult {
+    num_bin_op!(args, arg0 * arg1)
+}
+
+fn num_div(_vm: &mut WrenVm, args: &[Value]) -> PrimitiveResult {
+    num_bin_op!(args, arg0 / arg1)
+}
+
+// ----------------------------------------------------------------------------
+// System
+
+fn sys_write_string(vm: &mut WrenVm, args: &[Value]) -> PrimitiveResult {
+    let arg1 = get_slot!(args, 1)?;
+
+    if let Some(write_fn) = vm.config().write_fn {
+        let string = arg1.try_str()?;
+        write_fn(vm, string);
+    }
+
+    Ok(arg1.clone())
 }

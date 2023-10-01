@@ -70,3 +70,13 @@ impl Op {
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_opcode_size() {
+        println!("size_of::<Op>() -> {}", std::mem::size_of::<Op>());
+    }
+}

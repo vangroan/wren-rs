@@ -438,10 +438,10 @@ fn token_method_name(kind: TokenKind) -> Option<&'static str> {
     use TokenKind::*;
     println!("token_method_name({kind:?})");
     match kind {
-        Plus => Some("+"),
-        Minus => Some("-"),
-        Slash => Some("/"),
-        Star => Some("*"),
+        Plus => Some("+(_)"),
+        Minus => Some("-(_)"),
+        Slash => Some("/(_)"),
+        Star => Some("*(_)"),
         _ => None,
     }
 }

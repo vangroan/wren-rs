@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use crate::compiler::WrenCompiler;
-use crate::core::{initialize_core, BuiltIns};
+use crate::core::{initialize_core, teardown_core, BuiltIns};
 use crate::error::{RuntimeError, WrenError, WrenResult};
 use crate::opcode::Op;
 use crate::symbol::SymbolTable;
@@ -109,8 +109,14 @@ impl WrenVm {
         vm
     }
 
+    pub fn config(&self) -> &WrenConfig {
+        &self.config
+    }
+
     pub fn interpret(&mut self, module_name: &str, source: &str) -> WrenResult<Value> {
         let closure = new_handle(self.compile_in_module(module_name, source, false)?);
+        println!("ops: {:#?}", closure.borrow().func.borrow().code.as_slice());
+
         let fiber = new_handle(ObjFiber::new(Some(closure)).map_err(WrenError::new_runtime)?);
         run_interpreter(self, fiber)
     }
@@ -152,6 +158,14 @@ impl WrenVm {
             Value::Num(_) => core.num_class.clone(),
             _ => todo!("class_by_value"),
         }
+    }
+}
+
+impl Drop for WrenVm {
+    fn drop(&mut self) {
+        // Ensure the circular `Rc` web of the object model is unlinked
+        // so the memory doesn't leak.
+        teardown_core(self);
     }
 }
 
@@ -387,5 +401,15 @@ mod test {
         println!("Return value: {value:?}");
 
         assert_eq!(value, Value::new_num(60.0))
+    }
+
+    #[test]
+    fn test_num_arithmetic() {
+        let mut vm = WrenVm::new(create_test_config());
+
+        let value = vm.interpret("main", r"return 1 + 2 - 3 / 4 * 5").expect("interpret");
+        println!("Return value: {value:?}");
+
+        assert_eq!(value, Value::new_num(-0.75))
     }
 }
