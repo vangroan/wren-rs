@@ -81,10 +81,16 @@ struct Local {
 /// Bookkeeping information for compiling a class definition.
 struct ClassInfo {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ScopeDepth {
     Module,
     Block(usize),
+}
+
+impl ScopeDepth {
+    fn is_module(&self) -> bool {
+        matches!(self, ScopeDepth::Module)
+    }
 }
 
 #[derive(Debug)]
@@ -117,8 +123,8 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     }
 
     // FIXME: Private ObjFn type in public compile() signature.
-    pub(crate) fn compile(&mut self, _module: Handle<ObjModule>, is_expression: bool) -> WrenResult<Handle<ObjFn>> {
-        self.func = Some(ObjFn::new());
+    pub(crate) fn compile(&mut self, is_expression: bool) -> WrenResult<Handle<ObjFn>> {
+        self.func = Some(ObjFn::new(self.module.clone()));
 
         // Initialise.
         self.next_token()?;
@@ -185,6 +191,11 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
                 kind: ErrorKind::Compile(CompileError::UnexpectedEndOfTokens),
             }),
         }
+    }
+
+    /// Take ownership of the current token, leaving `None` in the [`self.token`] field.
+    fn take_token(&mut self) -> WrenResult<Token> {
+        self.token.take().ok_or_else(|| WrenError::new_compile(CompileError::UnexpectedEndOfTokens))
     }
 
     /// Declares a variable in the current scope whose name is the given token.
@@ -273,7 +284,7 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
             Keyword(Class) => self.compile_class(),
             Keyword(Foreign) => self.compile_foreign(),
             Keyword(Import) => self.compile_import(),
-            Keyword(Var) => self.compile_var(),
+            Keyword(Var) => self.compile_var_def(),
             _ => self.compile_stmt(),
         }
     }
@@ -315,8 +326,32 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         todo!()
     }
 
-    fn compile_var(&mut self) -> WrenResult<()> {
-        todo!()
+    /// Compile a "var" variable definition statement.
+    fn compile_var_def(&mut self) -> WrenResult<()> {
+        debug_assert_eq!(self.token.keyword(), Some(KeywordKind::Var));
+        self.next_token()?; // var
+
+        // Consume its name token, but don't declare it yet.
+        // A local variable should not be in scope in its own initializer.
+        let name_token = self.take_token()?;
+        self.next_token()?;  // name
+
+        // The right-hand-side is optional, defaulting the
+        // variable to null if it's omitted.
+        if self.token.kind() == Some(TokenKind::Eq) {
+            self.next_token()?; // =
+            self.ignore_newlines()?;
+
+            // Variable initializer expression.
+            self.compile_expr()?;
+        } else {
+            self.emit_op(Op::PushNull);
+        }
+
+        // Now put the symbol in scope.
+        let var = self.declare_variable(&name_token)?;
+        self.store_var(var.symbol);
+        Ok(())
     }
 
     /// Compile a `return` statement.
@@ -338,6 +373,18 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
                 Ok(())
             }
         }
+    }
+
+    /// Emit instructions to store a module scoped variable.
+    fn store_var(&mut self, symbol: SymbolId) {
+        if !self.scope_depth.is_module() {
+            todo!("How do we handle defining local variables?");
+        }
+
+        // Module variables are stored in their own table.
+        // The top stack value is temporary.
+        self.emit_op(Op::StoreModVar(symbol));
+        self.emit_op(Op::Pop);
     }
 }
 
@@ -598,10 +645,20 @@ mod test {
 
     #[test]
     fn test_expr() {
-        let mut method_names = SymbolTable::new();
-        let mut compiler = WrenCompiler::new("return 7", &mut method_names);
         let module = new_handle(ObjModule::new("main"));
+        let mut method_names = SymbolTable::new();
+        let mut compiler = WrenCompiler::new(module, "return 7", &mut method_names);
 
-        let obj_fn = compiler.compile(module, false).unwrap();
+        let obj_fn = compiler.compile(false).unwrap();
+    }
+
+    #[test]
+    fn test_var_def() {
+        let module = new_handle(ObjModule::new("main"));
+        let mut method_names = SymbolTable::new();
+        let mut compiler = WrenCompiler::new(module, "var x = 7", &mut method_names);
+
+        let obj_fn = compiler.compile(false).unwrap();
+        println!("{:?}", obj_fn.borrow().code);
     }
 }

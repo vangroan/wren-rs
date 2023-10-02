@@ -35,7 +35,18 @@ pub(crate) enum Op {
     /// Push the constant value with the given index onto the stack.
     Constant(ConstantId),
 
-    // Invoke the method with symbol.
+    /// Push [`crate::value::Value::Null`] onto the stack.
+    PushNull,
+
+    /// Store the value at the top of the stack in the module variable identified by the symbol.
+    ///
+    /// Does not pop the stack.
+    StoreModVar(SymbolId),
+
+    // Pop and discard the top value of the stack.
+    Pop,
+
+    /// Invoke the method with symbol.
     Call(Arity, SymbolId),
 
     /// Exit from the current function and return the value on the top of the stack.
@@ -64,6 +75,9 @@ impl Op {
             NoOp => 0,
             Call(arg_count, _) => -(arg_count.as_usize() as isize),
             Constant(_) => 1,
+            PushNull => 1,
+            StoreModVar(_) => 0,
+            Pop => -1,
             Return => 0,
             EndModule => 1,
             End => -2,

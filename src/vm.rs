@@ -141,8 +141,8 @@ impl WrenVm {
     }
 
     fn compile(&mut self, module: Handle<ObjModule>, source: &str, is_expression: bool) -> WrenResult<Handle<ObjFn>> {
-        let mut compiler = WrenCompiler::new(source, &mut self.method_names);
-        compiler.compile(module, is_expression)
+        let mut compiler = WrenCompiler::new(module, source, &mut self.method_names);
+        compiler.compile(is_expression)
     }
 
     fn get_module(&self, module_name: &str) -> Option<Handle<ObjModule>> {
@@ -262,6 +262,8 @@ fn run_op_loop(vm: &mut WrenVm, fiber: &mut ObjFiber, frame: &mut CallFrame) -> 
     let mut pc = frame.pc;
     let func_rc = frame.closure.borrow().func.clone();
     let func = func_rc.borrow();
+    let module_rc = func.module.clone();
+    let mut module = module_rc.borrow_mut();
     let constants = func.constants.as_slice();
     let ops: &[Op] = func.code.as_slice();
 
@@ -305,6 +307,15 @@ fn run_op_loop(vm: &mut WrenVm, fiber: &mut ObjFiber, frame: &mut CallFrame) -> 
             Op::Constant(id) => {
                 fiber.stack.push(constants[id.as_usize()].clone());
             }
+            Op::PushNull => fiber.stack.push(Value::Null),
+            Op::StoreModVar(symbol) => {
+                if let Some(value) = fiber.stack.last() {
+                    module.store_var(symbol, value.clone());
+                }
+
+                // TODO: Performance - Commonly followed by Pop.
+            }
+            Op::Pop => { fiber.stack.pop(); },
             Op::Return => {
                 let value = fiber.stack.pop().unwrap_or_default();
                 save!(frame, pc);
@@ -369,9 +380,10 @@ mod test {
 
         // vm.interpret("main", r#"System.print("Hello, world!")"#).expect("interpret");
         // vm.interpret("main", r#"12345"#).expect("interpret");
+        let module = new_handle(ObjModule::new("main"));
 
         // Construct a closure as the compiler would
-        let mut obj_fn = ObjFn::new();
+        let mut obj_fn = ObjFn::new(module);
         obj_fn.intern_constant(7.0.into());
         obj_fn.push_op(Op::Constant(0.into()), 0);
         obj_fn.push_op(Op::Return, 0);
@@ -411,5 +423,16 @@ mod test {
         println!("Return value: {value:?}");
 
         assert_eq!(value, Value::new_num(-0.75))
+    }
+
+    #[test]
+    fn test_var_def() {
+        let mut vm = WrenVm::new(create_test_config());
+
+        let value = vm.interpret("main", r#"
+        var x = 7
+        return
+        "#).expect("interpret");
+        println!("Return value: {value:?}");
     }
 }

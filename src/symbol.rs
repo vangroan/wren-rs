@@ -38,6 +38,7 @@ impl From<usize> for SymbolId {
     }
 }
 
+#[derive(Debug)]
 pub struct SymbolTable {
     symbols: Vec<String>,
 }

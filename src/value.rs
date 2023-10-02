@@ -196,7 +196,8 @@ pub(crate) struct Obj {
     pub(crate) class: Option<Handle<ObjClass>>,
 }
 
-pub(crate) struct ObjModule {
+#[derive(Debug)]
+pub struct ObjModule {
     name: String,
     variables: Vec<Value>,
     var_names: SymbolTable,
@@ -235,6 +236,11 @@ impl ObjModule {
         );
         self.variables.push(value);
         Ok(symbol_id)
+    }
+
+    #[inline(always)]
+    pub(crate) fn store_var(&mut self, symbol: SymbolId, value: Value) {
+        self.variables[symbol.as_usize()] = value;
     }
 
     pub(crate) fn define_var(&mut self, name: impl ToString, value: Value) -> WrenResult<SymbolId> {
@@ -289,15 +295,18 @@ pub(crate) struct ObjFn {
     pub(crate) code: Vec<Op>,
     pub(crate) constants: Vec<Value>,
 
+    pub(crate) module: Handle<ObjModule>,
+
     // TODO: In upstream Wren this was turned into a pointer, for an unknown performance benefit. (smaller struct?)
     debug: FnDebug,
 }
 
 impl ObjFn {
-    pub fn new() -> Self {
+    pub fn new(module: Handle<ObjModule>) -> Self {
         Self {
             code: Vec::new(),
             constants: Vec::new(),
+            module,
             debug: FnDebug::default(),
         }
     }
