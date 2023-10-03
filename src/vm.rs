@@ -84,6 +84,8 @@ pub struct WrenVm {
     /// The currently running fiber.
     fiber: Option<Handle<ObjFiber>>,
 
+    last_module: Option<Handle<ObjModule>>,
+
     config: WrenConfig,
 }
 
@@ -100,6 +102,7 @@ impl WrenVm {
             // TODO: Figure out how to avoid paying for the Option unwrap in the interpreter loop.
             builtins: None,
             fiber: None,
+            last_module: None,
             config,
         };
 
@@ -128,7 +131,9 @@ impl WrenVm {
             None => {
                 // TODO: Implicitly import core module
                 // FIXME: Do we need to copy module name to a `Value`?
-                new_handle(ObjModule::new(module_name))
+                let new_module = new_handle(ObjModule::new(module_name));
+                self.modules.insert(module_name.to_string(), new_module.clone());
+                new_module
             }
         };
 
@@ -315,14 +320,17 @@ fn run_op_loop(vm: &mut WrenVm, fiber: &mut ObjFiber, frame: &mut CallFrame) -> 
 
                 // TODO: Performance - Commonly followed by Pop.
             }
-            Op::Pop => { fiber.stack.pop(); },
+            Op::Pop => {
+                fiber.stack.pop();
+            }
             Op::Return => {
                 let value = fiber.stack.pop().unwrap_or_default();
                 save!(frame, pc);
                 return Ok(FuncAction::Return(value));
             }
             Op::EndModule => {
-                todo!()
+                fiber.stack.push(Value::Null);
+                vm.last_module = Some(func.module.clone());
             }
             Op::End => {
                 todo!()
@@ -429,10 +437,22 @@ mod test {
     fn test_var_def() {
         let mut vm = WrenVm::new(create_test_config());
 
-        let value = vm.interpret("main", r#"
+        let value = vm
+            .interpret(
+                "main",
+                r#"
         var x = 7
+        var y = 1 + 2 - 3 / 4 * 5
         return
-        "#).expect("interpret");
+        "#,
+            )
+            .expect("interpret");
         println!("Return value: {value:?}");
+
+        let module = vm.modules.get("main").unwrap();
+        println!("'{}' variables:", module.borrow().name());
+        for (name, value) in module.borrow().dump_vars() {
+            println!("{name:>12}: {value:?}");
+        }
     }
 }

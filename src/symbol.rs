@@ -78,4 +78,8 @@ impl SymbolTable {
     pub fn is_empty(&self) -> bool {
         self.symbols.is_empty()
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        self.symbols.iter().map(|string| string.as_str())
+    }
 }

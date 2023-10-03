@@ -7,6 +7,7 @@ use crate::opcode::{Arity, Op};
 use crate::symbol::SymbolTable;
 use crate::SymbolId;
 use std::convert::Infallible;
+use std::num::NonZeroUsize;
 
 use super::lexer::Lexer;
 use crate::value::{new_handle, Handle, ObjFn, ObjModule, Value};
@@ -81,15 +82,22 @@ struct Local {
 /// Bookkeeping information for compiling a class definition.
 struct ClassInfo {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ScopeDepth {
     Module,
-    Block(usize),
+    Block(NonZeroUsize),
 }
 
 impl ScopeDepth {
     fn is_module(&self) -> bool {
         matches!(self, ScopeDepth::Module)
+    }
+
+    fn block_depth(&self) -> usize {
+        match self {
+            Self::Module => panic!("scope depth is at module level, not at block level"),
+            Self::Block(depth) => depth.get(),
+        }
     }
 }
 
@@ -101,8 +109,32 @@ enum Scope {
 }
 
 struct Variable {
-    symbol: SymbolId,
+    id: VarId,
     scope: Scope,
+}
+
+/// Variable identifier.
+#[derive(Debug, Clone)]
+enum VarId {
+    /// Variable is declared in the module's symbol table, the "global" scope.
+    Module(SymbolId),
+
+    /// Variable is declared in a local scope.
+    ///
+    /// The number is the temporary index in the [`WrenCompiler`] `locals` stack.
+    /// It is only meaningful for the lifetime of the scope during _compilation_.
+    /// Once the scope is truncated off the compiler's stack, this index should be discarded,
+    /// and won't be useful for the interpreter later.
+    Local(usize),
+}
+
+impl VarId {
+    fn symbol(&self) -> Option<SymbolId> {
+        match self {
+            Self::Module(symbol) => Some(symbol.clone()),
+            Self::Local(_) => None,
+        }
+    }
 }
 
 impl<'src, 'sym> WrenCompiler<'src, 'sym> {
@@ -195,7 +227,50 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
 
     /// Take ownership of the current token, leaving `None` in the [`self.token`] field.
     fn take_token(&mut self) -> WrenResult<Token> {
-        self.token.take().ok_or_else(|| WrenError::new_compile(CompileError::UnexpectedEndOfTokens))
+        self.token
+            .take()
+            .ok_or_else(|| WrenError::new_compile(CompileError::UnexpectedEndOfTokens))
+    }
+
+    /// Check the current token against the given token kind.
+    ///
+    /// Returns `Ok` if they match, advancing to the next token.
+    ///
+    /// Returns [`WrenError`] if they mismatch, in which case the compiler
+    /// will not advance tot he next token.
+    ///
+    /// Will return [`CompileError::UnexpectedEndOfTokens`] if the stream is
+    /// at the end of the source code.
+    fn expect_token(&mut self, kind: TokenKind) -> WrenResult<()> {
+        match self.token.kind() {
+            Some(current_kind) => {
+                if current_kind == kind {
+                    self.next_token()?;
+                    Ok(())
+                } else {
+                    Err(WrenError::new_compile(CompileError::UnexpectedToken(
+                        kind,
+                        current_kind,
+                    )))
+                }
+            }
+            None => Err(WrenError::new_compile(CompileError::UnexpectedEndOfTokens)),
+        }
+    }
+
+    /// Check whether the current token terminates a statement.
+    fn expect_end(&mut self) -> WrenResult<()> {
+        match self.token.kind() {
+            Some(TokenKind::Newline) | Some(TokenKind::End) | None => {
+                self.next_token()?;
+                Ok(())
+            }
+            // TODO: Error messages that can list expected tokens. Eg. "expected newline or end-of-file, encountered ..."
+            Some(kind) => Err(WrenError::new_compile(CompileError::UnexpectedToken(
+                TokenKind::Newline,
+                kind,
+            ))),
+        }
     }
 
     /// Declares a variable in the current scope whose name is the given token.
@@ -206,11 +281,8 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
             ScopeDepth::Module => {
                 let symbol = self.module.borrow_mut().define_var(fragment, Value::Null)?;
                 Ok(Variable {
-                    symbol,
-                    scope: match self.scope_depth {
-                        ScopeDepth::Module => Scope::Module,
-                        ScopeDepth::Block(_) => Scope::Local,
-                    },
+                    id: VarId::Module(symbol),
+                    scope: Scope::Module,
                 })
             }
             ScopeDepth::Block(scope_depth) => {
@@ -220,7 +292,7 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
                 for local in self.locals.iter().rev() {
                     // Scanning variables back to front.
                     // Outer scopes are earlier in the vector, more local scopes are later.
-                    if local.depth < scope_depth {
+                    if local.depth < scope_depth.get() {
                         break;
                     }
 
@@ -231,21 +303,29 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
                     }
                 }
 
-                self.add_local(fragment);
+                // Index in the scope stack.
+                let index = self.add_local(fragment);
 
-                todo!("Function can return both module variable symbol and local stack offset!?")
+                // This function returns both module variable symbol and local stack offset.
+                Ok(Variable {
+                    id: VarId::Local(index),
+                    scope: Scope::Local,
+                })
             }
         }
     }
 
-    fn add_local(&mut self, name: impl ToString) {
-
-        //   Local* local = &compiler->locals[compiler->numLocals];
-        //   local->name = name;
-        //   local->length = length;
-        //   local->depth = compiler->scopeDepth;
-        //   local->isUpvalue = false;
-        //   return compiler->numLocals++;
+    /// Add a local to the compiler's scope stack.
+    ///
+    /// Returns the index where the new local was inserted.
+    fn add_local(&mut self, name: impl ToString) -> usize {
+        let index = self.locals.len();
+        self.locals.push(Local {
+            name: name.to_string(),
+            depth: self.scope_depth.block_depth(),
+            is_upvalue: false,
+        });
+        index
     }
 }
 
@@ -328,13 +408,14 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
 
     /// Compile a "var" variable definition statement.
     fn compile_var_def(&mut self) -> WrenResult<()> {
+        println!("compile_var_def");
         debug_assert_eq!(self.token.keyword(), Some(KeywordKind::Var));
         self.next_token()?; // var
 
         // Consume its name token, but don't declare it yet.
         // A local variable should not be in scope in its own initializer.
         let name_token = self.take_token()?;
-        self.next_token()?;  // name
+        self.next_token()?; // name
 
         // The right-hand-side is optional, defaulting the
         // variable to null if it's omitted.
@@ -348,9 +429,12 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
             self.emit_op(Op::PushNull);
         }
 
+        // Terminate statement.
+        self.expect_end()?;
+
         // Now put the symbol in scope.
         let var = self.declare_variable(&name_token)?;
-        self.store_var(var.symbol);
+        self.store_mod_var(var.id.symbol().unwrap());
         Ok(())
     }
 
@@ -358,12 +442,13 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     fn compile_return(&mut self) -> WrenResult<()> {
         debug_assert_eq!(self.token.keyword(), Some(KeywordKind::Return));
 
-        self.next_token()?;
+        self.next_token()?; // return
 
         let token = self.try_token()?;
         match token.kind {
             TokenKind::Newline => {
                 // TODO: If there's no expression after return, initializers should return 'this' and regular methods should return null.
+                self.next_token()?;
                 Ok(())
             }
             _ => {
@@ -376,11 +461,7 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     }
 
     /// Emit instructions to store a module scoped variable.
-    fn store_var(&mut self, symbol: SymbolId) {
-        if !self.scope_depth.is_module() {
-            todo!("How do we handle defining local variables?");
-        }
-
+    fn store_mod_var(&mut self, symbol: SymbolId) {
         // Module variables are stored in their own table.
         // The top stack value is temporary.
         self.emit_op(Op::StoreModVar(symbol));
@@ -518,6 +599,7 @@ impl Associativity {
 /// Functions that form the Pratt-parser.
 impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     fn compile_expr(&mut self) -> WrenResult<()> {
+        println!("compile_expr");
         self.compile_expr_precedence(Precedence::Lowest)
     }
 

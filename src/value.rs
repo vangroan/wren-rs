@@ -280,6 +280,11 @@ impl ObjModule {
             .resolve(var_name)
             .and_then(|index| self.variables.get(index.as_usize()))
     }
+
+    /// Copy all of this module's variables to a vector.
+    pub(crate) fn dump_vars(&self) -> Vec<(&str, Value)> {
+        self.var_names.iter().zip(self.variables.iter().cloned()).collect()
+    }
 }
 
 /// Debug information for a function object.

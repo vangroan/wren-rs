@@ -1,4 +1,5 @@
 //! Error type.
+use crate::compiler::TokenKind;
 use std::fmt::{self, Display, Formatter};
 use std::num::{ParseFloatError, ParseIntError};
 
@@ -66,6 +67,8 @@ pub enum CompileError {
     ForwardVariable(String, usize),
     SymbolExists,
     SymbolNotFound,
+    /// Encountered an unexpected token kind (expected, actual).
+    UnexpectedToken(TokenKind, TokenKind),
     UnexpectedEndOfTokens,
     InvalidOperator,
 }
@@ -140,6 +143,9 @@ impl Display for WrenError {
                 ),
                 CE::SymbolExists => write!(f, "symbol already defined"),
                 CE::SymbolNotFound => write!(f, "symbol not found"),
+                CE::UnexpectedToken(expected, actual) => {
+                    write!(f, "expected token '{expected:?}', encountered '{actual:?}'")
+                }
                 CE::UnexpectedEndOfTokens => write!(f, "unexpected end of tokens"),
                 CE::InvalidOperator => write!(f, "value does not support operator"),
             },
