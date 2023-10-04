@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 
 use crate::compiler::WrenCompiler;
-use crate::core::{initialize_core, teardown_core, BuiltIns};
+use crate::core::{initialize_core, load_core_module, teardown_core, BuiltIns};
 use crate::error::{RuntimeError, WrenError, WrenResult};
 use crate::opcode::Op;
 use crate::symbol::SymbolTable;
@@ -129,9 +129,14 @@ impl WrenVm {
         let module = match self.get_module(module_name) {
             Some(module) => module,
             None => {
-                // TODO: Implicitly import core module
+                println!("Creating new module");
+
                 // FIXME: Do we need to copy module name to a `Value`?
                 let new_module = new_handle(ObjModule::new(module_name));
+
+                // Implicitly import core module into top-level scope.
+                load_core_module(self, &mut *new_module.borrow_mut())?;
+
                 self.modules.insert(module_name.to_string(), new_module.clone());
                 new_module
             }
@@ -320,6 +325,10 @@ fn run_op_loop(vm: &mut WrenVm, fiber: &mut ObjFiber, frame: &mut CallFrame) -> 
 
                 // TODO: Performance - Commonly followed by Pop.
             }
+            Op::LoadModVar(symbol) => {
+                let value = module.get_var(symbol).cloned().unwrap_or(Value::Null);
+                fiber.stack.push(value);
+            }
             Op::Pop => {
                 fiber.stack.pop();
             }
@@ -327,6 +336,12 @@ fn run_op_loop(vm: &mut WrenVm, fiber: &mut ObjFiber, frame: &mut CallFrame) -> 
                 let value = fiber.stack.pop().unwrap_or_default();
                 save!(frame, pc);
                 return Ok(FuncAction::Return(value));
+            }
+            Op::Class(_field_num) => {
+                todo!()
+            }
+            Op::ForeignClass => {
+                todo!()
             }
             Op::EndModule => {
                 fiber.stack.push(Value::Null);
@@ -420,7 +435,7 @@ mod test {
         let value = vm.interpret("main", r"return 7 + 11 + 42").expect("interpret");
         println!("Return value: {value:?}");
 
-        assert_eq!(value, Value::new_num(60.0))
+        assert_eq!(value, Value::from_num(60.0))
     }
 
     #[test]
@@ -430,7 +445,7 @@ mod test {
         let value = vm.interpret("main", r"return 1 + 2 - 3 / 4 * 5").expect("interpret");
         println!("Return value: {value:?}");
 
-        assert_eq!(value, Value::new_num(-0.75))
+        assert_eq!(value, Value::from_num(-0.75))
     }
 
     #[test]
@@ -454,5 +469,13 @@ mod test {
         for (name, value) in module.borrow().dump_vars() {
             println!("{name:>12}: {value:?}");
         }
+    }
+
+    #[test]
+    fn test_class_def() {
+        let mut vm = WrenVm::new(create_test_config());
+        let value = vm.interpret("main", "class Foo {}");
+        println!("Return value: {value:?}");
+        assert!(value.is_ok());
     }
 }

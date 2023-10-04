@@ -82,4 +82,11 @@ impl SymbolTable {
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         self.symbols.iter().map(|string| string.as_str())
     }
+
+    pub fn pairs(&self) -> impl Iterator<Item = (SymbolId, &str)> {
+        self.symbols
+            .iter()
+            .enumerate()
+            .map(|(idx, name)| (SymbolId::from_usize(idx), name.as_str()))
+    }
 }

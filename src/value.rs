@@ -92,11 +92,7 @@ pub enum Value {
 }
 
 impl Value {
-    pub const fn new_false() -> Self {
-        Value::False
-    }
-
-    pub const fn new_num(num: f64) -> Self {
+    pub const fn from_num(num: f64) -> Self {
         Value::Num(num)
     }
 
@@ -110,6 +106,10 @@ impl Value {
             Self::Num(num) => Ok(*num),
             _ => Err(RuntimeError::InvalidType),
         }
+    }
+
+    pub fn from_str(string: impl ToString) -> Self {
+        Value::Str(string.to_string())
     }
 
     /// Attempt to cast the value to a string.
@@ -225,6 +225,13 @@ impl ObjModule {
         self.variables.as_slice()
     }
 
+    pub(crate) fn var_pairs(&self) -> impl Iterator<Item = (SymbolId, &str, &Value)> {
+        self.var_names
+            .pairs()
+            .zip(self.variables.iter())
+            .map(|((symbol, name), value)| (symbol, name, value))
+    }
+
     /// Directly insert a variable into the module's symbol table, without scope checking
     /// or ensuring the name doesn't exist.
     pub(crate) fn insert_var(&mut self, name: impl ToString, value: Value) -> WrenResult<SymbolId> {
@@ -241,6 +248,10 @@ impl ObjModule {
     #[inline(always)]
     pub(crate) fn store_var(&mut self, symbol: SymbolId, value: Value) {
         self.variables[symbol.as_usize()] = value;
+    }
+
+    pub(crate) fn get_var(&mut self, symbol: SymbolId) -> Option<&Value> {
+        self.variables.get(symbol.as_usize())
     }
 
     pub(crate) fn define_var(&mut self, name: impl ToString, value: Value) -> WrenResult<SymbolId> {
@@ -279,6 +290,10 @@ impl ObjModule {
         self.var_names
             .resolve(var_name)
             .and_then(|index| self.variables.get(index.as_usize()))
+    }
+
+    pub(crate) fn resolve_var(&self, var_name: &str) -> Option<SymbolId> {
+        self.var_names.resolve(var_name)
     }
 
     /// Copy all of this module's variables to a vector.

@@ -13,8 +13,17 @@ const CORE_MODULE_NAME: &str = "<core>";
 const CORE_MODULE_SCRIPT: &str = include_str!("wren_core.wren");
 
 /// Load the core module's classes and functions into the given module.
-pub(crate) fn load_core_module(module: &mut ObjModule) -> WrenResult<()> {
-    todo!()
+pub(crate) fn load_core_module(vm: &WrenVm, module: &mut ObjModule) -> WrenResult<()> {
+    println!("loading core module into {}", module.name());
+
+    let core_handle = vm.modules.get(CORE_MODULE_NAME).cloned().unwrap();
+    let core = core_handle.borrow();
+
+    for (_, name, value) in core.var_pairs() {
+        module.insert_var(name, value.clone())?;
+    }
+
+    Ok(())
 }
 
 pub(crate) struct BuiltIns {
@@ -188,7 +197,7 @@ macro_rules! get_slot {
 // Object
 
 fn object_not(_vm: &mut WrenVm, _args: &[Value]) -> PrimitiveResult {
-    Ok(Value::new_false())
+    Ok(Value::False)
 }
 
 // ----------------------------------------------------------------------------

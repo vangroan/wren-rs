@@ -43,6 +43,9 @@ pub(crate) enum Op {
     /// Does not pop the stack.
     StoreModVar(SymbolId),
 
+    /// Pushes the value of the module-level variable identified by the symbol onto the stack.
+    LoadModVar(SymbolId),
+
     // Pop and discard the top value of the stack.
     Pop,
 
@@ -51,6 +54,14 @@ pub(crate) enum Op {
 
     /// Exit from the current function and return the value on the top of the stack.
     Return,
+
+    /// Creates a class. Top of stack is the superclass. Below that is a string for
+    /// the name of the class. The `u8` argument is the number of fields in the class.
+    Class(u8),
+
+    /// Creates a foreign class. Top of stack is the superclass. Below that is a
+    /// string for the name of the class.
+    ForeignClass,
 
     /// This is executed at the end of the module's body. Pushes NULL onto the stack
     /// as the "return value" of the import statement and stores the module as the
@@ -77,8 +88,11 @@ impl Op {
             Constant(_) => 1,
             PushNull => 1,
             StoreModVar(_) => 0,
+            LoadModVar(_) => 1,
             Pop => -1,
             Return => 0,
+            Class(_) => -1,
+            ForeignClass => -1,
             EndModule => 1,
             End => -2,
         }

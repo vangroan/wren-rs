@@ -53,6 +53,7 @@ pub struct WrenCompiler<'src, 'sym> {
 
     /// If this is a compiler for a method, then we keep
     /// track of the class enclosing it.
+    /// TODO: This may have to be a stack because we don't share pointers like C
     enclosing_class: Option<ClassInfo>,
 
     /// The function being compiled.
@@ -80,7 +81,13 @@ struct Local {
 }
 
 /// Bookkeeping information for compiling a class definition.
-struct ClassInfo {}
+struct ClassInfo {
+    is_foreign: bool,
+    name: String,
+    fields: SymbolTable,
+    methods: SymbolTable,
+    static_methods: SymbolTable,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ScopeDepth {
@@ -181,6 +188,32 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         Ok(new_handle(self.func.take().unwrap()))
     }
 
+    fn push_scope(&mut self) {
+        match &mut self.scope_depth {
+            ScopeDepth::Module => self.scope_depth = ScopeDepth::Block(NonZeroUsize::new(1).unwrap()),
+            ScopeDepth::Block(depth) => {
+                let depth = NonZeroUsize::new(depth.get() + 1).unwrap();
+                self.scope_depth = ScopeDepth::Block(depth)
+            }
+        }
+    }
+
+    fn pop_scope(&mut self) {
+        match &mut self.scope_depth {
+            ScopeDepth::Module => {
+                panic!("currently at module scope, so cannot pop scopes any further")
+            }
+            ScopeDepth::Block(depth) => {
+                let depth = depth.get() - 1;
+                if depth == 0 {
+                    self.scope_depth = ScopeDepth::Module
+                } else {
+                    self.scope_depth = ScopeDepth::Block(NonZeroUsize::new(depth).unwrap())
+                }
+            }
+        }
+    }
+
     fn has_token(&self) -> bool {
         match self.token.kind() {
             Some(TokenKind::End) | None => false,
@@ -223,6 +256,37 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
                 kind: ErrorKind::Compile(CompileError::UnexpectedEndOfTokens),
             }),
         }
+    }
+
+    fn consume_token(&mut self, kind: TokenKind) -> WrenResult<Token> {
+        let token = self
+            .token
+            .as_ref()
+            .ok_or_else(|| WrenError::new_compile(CompileError::UnexpectedEndOfTokens))?;
+        if kind == token.kind {
+            let token = self.token.take().unwrap();
+            self.next_token()?;
+            Ok(token)
+        } else {
+            Err(WrenError::new_compile(CompileError::UnexpectedToken(kind, token.kind)))
+        }
+    }
+
+    fn match_token(&mut self, kind: TokenKind) -> WrenResult<bool> {
+        if let Some(token) = self.token.as_ref() {
+            if kind == token.kind {
+                self.next_token()?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn match_keyword(&mut self, keyword: KeywordKind) -> WrenResult<bool> {
+        self.match_token(TokenKind::Keyword(keyword))
     }
 
     /// Take ownership of the current token, leaving `None` in the [`self.token`] field.
@@ -384,18 +448,128 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     }
 
     fn compile_class(&mut self) -> WrenResult<()> {
-        debug_assert_eq!(self.token.keyword(), Some(KeywordKind::Class));
+        debug_assert!(matches!(
+            self.token.keyword(),
+            Some(KeywordKind::Class | KeywordKind::Foreign)
+        ));
 
-        self.next_token()?; // class
+        let is_foreign = self.token.keyword() == Some(KeywordKind::Foreign);
+        self.next_token()?; // class or foreign
 
+        if is_foreign {
+            self.consume_token(TokenKind::Keyword(KeywordKind::Class))?;
+        }
+
+        println!("rest: {:?}", self.lexer.rest());
+        println!("token1 {:?}", self.token);
+
+        // --------------------------------------------------------------------
         // Create a variable to store the class in.
+        let class_name = self.consume_token(TokenKind::Name)?;
+        let class_var = self.declare_variable(&class_name)?;
+        let class_name_str = class_name.fragment(self.lexer.source());
+        self.emit_constant(Value::from_str(class_name_str));
 
-        // name
+        println!("rest: {:?}", self.lexer.rest());
+        println!("token2 {:?}", self.token);
 
-        // parent
-        // body
+        // --------------------------------------------------------------------
+        // Super class
+        if self.match_keyword(KeywordKind::Is)? {
+            self.compile_expr_precedence(Precedence::Call)?;
+        } else {
+            // load builtin `Object` class variable from core module
+            let obj_class = self.module.borrow().resolve_var("Object").expect("core module must be loaded");
+            self.emit_op(Op::LoadModVar(obj_class));
+        }
 
-        todo!()
+        // --------------------------------------------------------------------
+        // Number-of-fields argumnet
+
+        // Store a placeholder for the number of fields argument. We don't know the
+        // count until we've compiled all the methods to see which fields are used.
+        let mut class_op_index = None;
+
+        // The ForeignClass and Class instructions are expected to pop the super class'
+        // name off the stack, but leave our current class' name on top.
+        if is_foreign {
+            self.emit_op(Op::ForeignClass);
+        } else {
+            class_op_index = Some(self.emit_placeholder(Op::Class(255)));
+        }
+
+        // --------------------------------------------------------------------
+        // Define module variable
+
+        // Store a module-level class definition in the module's variable table.
+        //
+        // A block local class will be on the stack later.
+        // TODO: Why does this come after the superclass and placeholder?
+        if let VarId::Module(symbol) = class_var.id {
+            self.store_mod_var(symbol);
+        }
+
+        // --------------------------------------------------------------------
+        // Body
+        self.push_scope();
+
+        let class_info = ClassInfo {
+            is_foreign,
+            name: class_name_str.to_string(),
+
+            // Set up a symbol table for the class's fields. We'll initially compile
+            // them to slots starting at zero. When the method is bound to the class, the
+            // bytecode will be adjusted by [wrenBindMethod] to take inherited fields
+            // into account.
+            fields: SymbolTable::new(),
+
+            // Set up symbol buffers to track duplicate static and instance methods.
+            methods: SymbolTable::new(),
+            static_methods: SymbolTable::new(),
+        };
+
+        self.enclosing_class = Some(class_info);
+
+        println!("rest: {:?}", self.lexer.rest());
+        println!("token3 {:?}", self.token);
+        self.consume_token(TokenKind::LeftBrace)?;
+        self.ignore_newlines()?;
+
+        while !self.match_token(TokenKind::RightBrace)? {
+            println!("compiling method");
+            self.compile_method()?;
+
+            // Don't require a newline after the last definition.
+            if self.match_token(TokenKind::RightBrace)? {
+                break;
+            }
+
+            // Method definition in class body must end with a newline.
+            println!("end method def");
+            self.consume_token(TokenKind::Newline)?;
+        }
+
+        println!("rest: {:?}", self.lexer.rest());
+        println!("token4 {:?}", self.token);
+
+        // Update the class instruction with the final number of fields.
+        if !is_foreign {
+            let op_index = class_op_index.unwrap();
+            self.patch_op(
+                op_index,
+                Op::Class(self.enclosing_class.as_ref().unwrap().fields.len() as u8),
+            );
+        }
+
+        self.pop_scope();
+        self.expect_end()?;
+
+        Ok(())
+    }
+
+    fn compile_method(&mut self) -> WrenResult<bool> {
+        // TODO: Compile method...
+        Ok(false)
     }
 
     fn compile_foreign(&mut self) -> WrenResult<()> {
@@ -461,6 +635,9 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     }
 
     /// Emit instructions to store a module scoped variable.
+    ///
+    /// The value at the top of the stack is copied into the module's variable table,
+    /// then the top of the stack is popped.
     fn store_mod_var(&mut self, symbol: SymbolId) {
         // Module variables are stored in their own table.
         // The top stack value is temporary.
@@ -480,22 +657,38 @@ enum Precedence {
     /// should have a precedence of `None`.
     None = 0,
     Lowest = 1,
-    Assignment = 2,    // =
-    Conditional = 3,   // ?:
-    LogicalOr = 4,     // ||
-    LogicalAnd = 5,    // &&
-    Equality = 6,      // == !=
-    Is = 7,            // is
-    Comparison = 8,    // < > <= >=
-    BitwiseOr = 9,     // |
-    BitwiseXor = 10,   // ^
-    BitwiseAnd = 11,   // &
-    BitwiseShift = 12, // << >>
-    Range = 13,        // .. ...
-    Term = 14,         // + -
-    Factor = 15,       // * / %
-    Unary = 16,        // - ! ~
-    Call = 17,         // . () []
+    Assignment = 2,
+    // =
+    Conditional = 3,
+    // ?:
+    LogicalOr = 4,
+    // ||
+    LogicalAnd = 5,
+    // &&
+    Equality = 6,
+    // == !=
+    Is = 7,
+    // is
+    Comparison = 8,
+    // < > <= >=
+    BitwiseOr = 9,
+    // |
+    BitwiseXor = 10,
+    // ^
+    BitwiseAnd = 11,
+    // &
+    BitwiseShift = 12,
+    // << >>
+    Range = 13,
+    // .. ...
+    Term = 14,
+    // + -
+    Factor = 15,
+    // * / %
+    Unary = 16,
+    // - ! ~
+    Call = 17,
+    // . () []
     Primary = 18,
 }
 
@@ -512,18 +705,18 @@ impl Precedence {
         use TokenKind::*;
 
         match kind {
-            Number | Name  => Precedence::Lowest,
-            Plus   | Minus => Precedence::Term,
-            Star   | Slash => Precedence::Factor,
-                       Eq  => Precedence::Assignment,
-            EqEq | BangEq  => Precedence::Equality,
+            Number | Name => Precedence::Lowest,
+            Plus | Minus => Precedence::Term,
+            Star | Slash => Precedence::Factor,
+            Eq => Precedence::Assignment,
+            EqEq | BangEq => Precedence::Equality,
 
-            Dot  | LeftParen | LeftBracket => Precedence::Call,
+            Dot | LeftParen | LeftBracket => Precedence::Call,
 
             // Terminators
             RightParen | RightBracket => Precedence::None,
             Comma => Precedence::None,
-            _     => Precedence::None,
+            _ => Precedence::None,
         }
     }
 }
@@ -535,16 +728,16 @@ impl TryFrom<i32> for Precedence {
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         use Precedence as P;
         match value {
-            0  => Ok(P::None),
-            1  => Ok(P::Lowest),
-            2  => Ok(P::Assignment),
-            3  => Ok(P::Conditional),
-            4  => Ok(P::LogicalOr),
-            5  => Ok(P::LogicalAnd),
-            6  => Ok(P::Equality),
-            7  => Ok(P::Is),
-            8  => Ok(P::Comparison),
-            9  => Ok(P::BitwiseOr),
+            0 => Ok(P::None),
+            1 => Ok(P::Lowest),
+            2 => Ok(P::Assignment),
+            3 => Ok(P::Conditional),
+            4 => Ok(P::LogicalOr),
+            5 => Ok(P::LogicalAnd),
+            6 => Ok(P::Equality),
+            7 => Ok(P::Is),
+            8 => Ok(P::Comparison),
+            9 => Ok(P::BitwiseOr),
             10 => Ok(P::BitwiseXor),
             11 => Ok(P::BitwiseAnd),
             12 => Ok(P::BitwiseShift),
@@ -554,7 +747,7 @@ impl TryFrom<i32> for Precedence {
             16 => Ok(P::Unary),
             17 => Ok(P::Call),
             18 => Ok(P::Primary),
-            _  => Ok(P::None),
+            _ => Ok(P::None),
         }
     }
 }
@@ -718,11 +911,32 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         // TODO: Line number from lexer
         func.push_op(op, 0);
     }
+
+    fn emit_placeholder(&mut self, op: Op) -> usize {
+        let func = self.func.as_mut().expect("compiler has no current function");
+        let index = func.code.len();
+        func.push_op(op, 0);
+        index
+    }
+
+    fn patch_op(&mut self, index: usize, op: Op) {
+        let func = self.func.as_mut().expect("compiler has no current function");
+        func.code[index] = op;
+    }
+
+    /// Emit an instruction to load the given constant onto the fiber's stack.
+    fn emit_constant(&mut self, constant: Value) {
+        let func = self.func.as_mut().expect("compiler has no current function");
+        let constant_id = func.intern_constant(constant);
+        // TODO: Line number from lexer
+        func.push_op(Op::Constant(constant_id), 0);
+    }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::core::load_core_module;
     use crate::value::new_handle;
 
     #[test]
