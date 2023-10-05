@@ -71,6 +71,9 @@ pub enum CompileError {
     UnexpectedToken(TokenKind, TokenKind),
     UnexpectedEndOfTokens,
     InvalidOperator,
+    /// Method reached the maximum parameter count.
+    MaxParameters,
+    MaxMethodName,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -148,6 +151,8 @@ impl Display for WrenError {
                 }
                 CE::UnexpectedEndOfTokens => write!(f, "unexpected end of tokens"),
                 CE::InvalidOperator => write!(f, "value does not support operator"),
+                CE::MaxParameters => write!(f, "methods cannot have more than {MAX_PARAMETERS} parameters"),
+                CE::MaxMethodName => write!(f, "method names cannot be longer than {MAX_METHOD_NAME} characters"),
             },
             EK::Runtime(err) => match err {
                 RE::StackOverflow => write!(f, "stack overflow"),

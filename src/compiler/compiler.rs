@@ -6,6 +6,7 @@ use crate::error::{CompileError, ErrorKind, WrenError, WrenResult};
 use crate::opcode::{Arity, Op};
 use crate::symbol::SymbolTable;
 use crate::SymbolId;
+use crate::limits::*;
 use std::convert::Infallible;
 use std::num::NonZeroUsize;
 
@@ -87,6 +88,9 @@ struct ClassInfo {
     fields: SymbolTable,
     methods: SymbolTable,
     static_methods: SymbolTable,
+
+    /// True if the current method being compiled is static.
+    in_static: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -526,6 +530,7 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
             // Set up symbol buffers to track duplicate static and instance methods.
             methods: SymbolTable::new(),
             static_methods: SymbolTable::new(),
+            in_static: false,
         };
 
         self.enclosing_class = Some(class_info);
@@ -567,8 +572,15 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         Ok(())
     }
 
+    /// Compile a method definition inside a class body.
     fn compile_method(&mut self) -> WrenResult<bool> {
-        // TODO: Compile method...
+        let is_foreign = self.match_keyword(KeywordKind::Foreign)?;
+        let is_static = self.match_keyword(KeywordKind::Static)?;
+        self.enclosing_class.as_mut().unwrap().in_static = is_static;
+
+        // TODO: Create sub-compiler for method
+
+
         Ok(false)
     }
 
@@ -643,6 +655,127 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         // The top stack value is temporary.
         self.emit_op(Op::StoreModVar(symbol));
         self.emit_op(Op::Pop);
+    }
+}
+
+
+#[derive(Debug)]
+enum SignatureKind {
+    Method,
+}
+
+#[derive(Debug)]
+struct Signature {
+    name: String,
+    kind: SignatureKind,
+    arity: Arity,
+}
+
+impl Signature {
+    fn new(name: impl ToString, kind: SignatureKind) -> WrenResult<Self> {
+        let name = name.to_string();
+        if name.len() > MAX_METHOD_NAME {
+            return Err(WrenError::new_compile(CompileError::MaxMethodName));
+        }
+
+        Ok(Self {
+            name,
+            kind,
+            arity: Arity::new(0),
+        })
+    }
+}
+
+/// Functions for compiling method signatures.
+impl<'src, 'sym> WrenCompiler<'src, 'sym> {
+    /// Compile a method signature.
+    ///
+    /// This is the entry point for all method types. Here we will
+    /// dispatch to the appropriate operator signatures.
+    ///
+    /// The current token in the compiler must be the name, or operator,
+    /// of the method definition. Keywords like `foreign` and `static`
+    /// must already be consumed.
+    ///
+    /// ```wren
+    /// class Game {
+    ///
+    ///   ┌─ start here
+    ///   │
+    ///   update() {
+    ///     ...
+    ///   }
+    ///
+    ///                  ┌─ start here
+    ///                  │
+    ///   foreign static +(other)
+    /// }
+    /// ```
+    fn compile_signature(&mut self) -> WrenResult<()> {
+        use TokenKind::*;
+
+        match self.token.kind() {
+            Some(Name) => { todo!() }
+            Some(Plus) => { todo!() }
+            Some(Minus) => { todo!() }
+            Some(Eq) => { todo!() }
+            Some(LeftBracket) => { todo!() }
+            _ => panic!("expected method definition"),
+        }
+    }
+
+    fn compile_signature_named(&mut self) -> WrenResult<()> {
+        debug_assert_eq!(self.token.kind(), Some(TokenKind::Name));
+
+
+
+        Ok(())
+    }
+
+    /// Updates the `kind` and `arity` of the given `sig` argument.
+    fn compile_method_parameters(&mut self, sig: &mut Signature) -> WrenResult<()> {
+        // Method parameters are optional.
+        if !self.match_token(TokenKind::LeftParen)? {
+            return Ok(());
+        }
+
+        sig.kind = SignatureKind::Method;
+
+        // Allow newline before an empty parameter list.
+        self.ignore_newlines()?;
+
+        // Allow an empty parameter list.
+        if self.match_token(TokenKind::RightParen)? {
+            sig.arity = Arity::new(0);
+            return Ok(());
+        }
+
+        self.compile_parameter_list(sig)?;
+        self.consume_token(TokenKind::RightParen)?;
+
+        Ok(())
+    }
+
+    fn compile_parameter_list(&mut self, sig: &mut Signature) -> WrenResult<()> {
+        debug_assert!(self.scope_depth != ScopeDepth::Module, "parameters must be compiled in a method's scope");
+
+        loop {
+            self.ignore_newlines()?;
+            sig.arity = Arity::new(sig.arity.as_u8() + 1);
+
+            if sig.arity.as_usize() > MAX_PARAMETERS {
+                return Err(WrenError::new_compile(CompileError::MaxParameters));
+            }
+
+            let token = self.consume_token(TokenKind::Name)?;
+            self.declare_variable(&token)?;
+
+            if !self.match_token(TokenKind::Comma)? {
+                break;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -884,18 +1017,6 @@ fn token_method_name(kind: TokenKind) -> Option<&'static str> {
         Star => Some("*(_)"),
         _ => None,
     }
-}
-
-#[derive(Debug)]
-enum SignatureKind {
-    Method,
-}
-
-#[derive(Debug)]
-struct Signature {
-    name: String,
-    kind: SignatureKind,
-    arity: Arity,
 }
 
 // -------------------------------------------------------------------------------------------------

@@ -118,7 +118,10 @@ impl WrenVm {
 
     pub fn interpret(&mut self, module_name: &str, source: &str) -> WrenResult<Value> {
         let closure = new_handle(self.compile_in_module(module_name, source, false)?);
-        println!("ops: {:#?}", closure.borrow().func.borrow().code.as_slice());
+
+        for (idx, op) in closure.borrow().func.borrow().code.as_slice().iter().enumerate() {
+            println!("{idx:>6}:{op:?}");
+        }
 
         let fiber = new_handle(ObjFiber::new(Some(closure)).map_err(WrenError::new_runtime)?);
         run_interpreter(self, fiber)

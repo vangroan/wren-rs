@@ -6,7 +6,7 @@ use crate::SymbolId;
 pub(crate) struct Arity(u8);
 
 impl Arity {
-    pub(crate) fn new(arg_count: u8) -> Self {
+    pub(crate) const fn new(arg_count: u8) -> Self {
         Self(arg_count)
     }
 
@@ -19,11 +19,11 @@ impl Arity {
         Self::new(index as u8)
     }
 
-    pub(crate) fn as_u8(self) -> u8 {
+    pub(crate) const fn as_u8(self) -> u8 {
         self.0
     }
 
-    pub(crate) fn as_usize(self) -> usize {
+    pub(crate) const fn as_usize(self) -> usize {
         self.0 as usize
     }
 }
