@@ -18,6 +18,7 @@ macro_rules! lexer_trace {
 }
 
 /// Lexical analyser (tokeniser) for the Wren language.
+#[derive(Clone)]
 pub struct Lexer<'src> {
     /// A cursor tracking the progress of scanning over the source text.
     /// Allows for character look ahead, and keeps track of the UTF-8

@@ -77,7 +77,7 @@ pub struct WrenVm {
     /// Map of module names to module objects.
     pub(crate) modules: HashMap<String, Handle<ObjModule>>,
 
-    pub(crate) method_names: SymbolTable,
+    pub(crate) method_names: Handle<SymbolTable>,
 
     pub(crate) builtins: Option<BuiltIns>,
 
@@ -98,7 +98,7 @@ impl WrenVm {
     pub fn new(config: WrenConfig) -> Self {
         let mut vm = Self {
             modules: HashMap::new(),
-            method_names: SymbolTable::new(),
+            method_names: new_handle(SymbolTable::new()),
             // TODO: Figure out how to avoid paying for the Option unwrap in the interpreter loop.
             builtins: None,
             fiber: None,
@@ -154,7 +154,7 @@ impl WrenVm {
     }
 
     fn compile(&mut self, module: Handle<ObjModule>, source: &str, is_expression: bool) -> WrenResult<Handle<ObjFn>> {
-        let mut compiler = WrenCompiler::new(module, source, &mut self.method_names);
+        let mut compiler = WrenCompiler::new(module, source, self.method_names.clone());
         compiler.compile(is_expression)
     }
 

@@ -179,7 +179,7 @@ pub(crate) fn bind_primitive(
     method_name: &str,
     func: PrimitiveFn,
 ) -> WrenResult<()> {
-    let symbol_id = vm.method_names.insert(method_name)?;
+    let symbol_id = vm.method_names.borrow_mut().insert(method_name)?;
     class_obj.bind_method(symbol_id, Method::PrimitiveValue(func));
     Ok(())
 }

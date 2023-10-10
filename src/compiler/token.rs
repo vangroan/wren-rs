@@ -3,14 +3,14 @@
 use super::span::Span;
 use crate::error::ParseError;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Token {
     pub span: Span,
     pub kind: TokenKind,
     pub value: LiteralValue,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LiteralValue {
     None,
     Number(f64),

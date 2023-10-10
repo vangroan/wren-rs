@@ -3,10 +3,10 @@
 
 use crate::compiler::token::{KeywordKind, Token, TokenExt, TokenKind};
 use crate::error::{CompileError, ErrorKind, WrenError, WrenResult};
+use crate::limits::*;
 use crate::opcode::{Arity, Op};
 use crate::symbol::SymbolTable;
 use crate::SymbolId;
-use crate::limits::*;
 use std::convert::Infallible;
 use std::num::NonZeroUsize;
 
@@ -16,7 +16,7 @@ use crate::value::{new_handle, Handle, ObjFn, ObjModule, Value};
 pub struct WrenCompiler<'src, 'sym> {
     lexer: Lexer<'src>,
 
-    method_names: &'sym mut SymbolTable,
+    method_names: Handle<SymbolTable>,
 
     locals: Vec<Local>,
 
@@ -47,7 +47,7 @@ pub struct WrenCompiler<'src, 'sym> {
 
     /// The compiler for the function enclosing this one,
     /// or `None` if it's the top module level.
-    // parent: Option<Box<WrenCompiler<'src>>>,
+    parent: Option<&'sym WrenCompiler<'src, 'sym>>,
 
     /// The Wren module currently being compiled.
     module: Handle<ObjModule>,
@@ -149,18 +149,45 @@ impl VarId {
 }
 
 impl<'src, 'sym> WrenCompiler<'src, 'sym> {
-    pub fn new(module: Handle<ObjModule>, source: &'src str, method_names: &'sym mut SymbolTable) -> Self {
+    pub fn new(module: Handle<ObjModule>, source: &'src str, method_names: Handle<SymbolTable>) -> Self {
         Self {
             lexer: Lexer::from_source(source),
             method_names,
             locals: Vec::new(),
             num_slots: 0,
             scope_depth: ScopeDepth::Module,
-            // parent: None,
+            parent: None,
             module,
             enclosing_class: None,
             func: None,
             token: None,
+            doc_comments: Vec::new(),
+        }
+    }
+
+    /// Create a sub-compiler for methods.
+    pub(crate) fn new_method(parent: &'sym WrenCompiler<'src, 'sym>) -> Self {
+        // TODO: Declare `this` variable in locals.
+
+        println!("creating sub-compiler");
+        let lexer = parent.lexer.clone();
+        println!("sub-compiler lexer {:?}", lexer.rest());
+
+        // The parent compiler will have already consumed a token from the lexer.
+        // We need to retain this state.
+        let token = parent.token.clone();
+
+        Self {
+            lexer: parent.lexer.clone(),
+            method_names: parent.method_names.clone(),
+            locals: Vec::new(),
+            num_slots: 0,
+            scope_depth: ScopeDepth::Block(NonZeroUsize::new(1).unwrap()),
+            parent: Some(parent),
+            module: parent.module.clone(),
+            enclosing_class: None,
+            func: None,
+            token,
             doc_comments: Vec::new(),
         }
     }
@@ -229,6 +256,11 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         loop {
             match self.lexer.next_token() {
                 Ok(token) => {
+                    println!(
+                        "next_token ➡ {:>6}:{:<4} {:?}",
+                        token.span.pos, token.span.size, token.kind
+                    );
+
                     // Collect document comments, which will implicitly belong to
                     // the token following the last comment line.
                     match token.kind {
@@ -272,6 +304,7 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
             self.next_token()?;
             Ok(token)
         } else {
+            panic!("expected {:?}, encountered {:?}", kind, token.kind);
             Err(WrenError::new_compile(CompileError::UnexpectedToken(kind, token.kind)))
         }
     }
@@ -550,7 +583,7 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
             }
 
             // Method definition in class body must end with a newline.
-            println!("end method def");
+            println!("compile_class: end method definition");
             self.consume_token(TokenKind::Newline)?;
         }
 
@@ -574,12 +607,27 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
 
     /// Compile a method definition inside a class body.
     fn compile_method(&mut self) -> WrenResult<bool> {
+        println!("compile_method {:?}", self.token);
+
         let is_foreign = self.match_keyword(KeywordKind::Foreign)?;
         let is_static = self.match_keyword(KeywordKind::Static)?;
         self.enclosing_class.as_mut().unwrap().in_static = is_static;
 
         // TODO: Create sub-compiler for method
+        let mut sub_compiler = WrenCompiler::new_method(self);
 
+        // Default the signature to a getter. The simplest method kind?
+        let mut sig = self.create_signature(SignatureKind::Getter)?;
+        sub_compiler.compile_signature(&mut sig)?;
+
+        // TODO: Parse method body.
+        sub_compiler.consume_token(TokenKind::LeftBrace)?;
+        sub_compiler.consume_token(TokenKind::RightBrace)?;
+
+        // Synchronise this compiler with the progress made by the sub-compiler.
+        let WrenCompiler { lexer, token, .. } = sub_compiler;
+        self.lexer = lexer;
+        self.token = token;
 
         Ok(false)
     }
@@ -658,10 +706,14 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     }
 }
 
-
 #[derive(Debug)]
 enum SignatureKind {
     Method,
+    Getter,
+    Setter,
+    Subscript,
+    SubscriptSetter,
+    Initializer,
 }
 
 #[derive(Debug)]
@@ -688,6 +740,14 @@ impl Signature {
 
 /// Functions for compiling method signatures.
 impl<'src, 'sym> WrenCompiler<'src, 'sym> {
+    /// Create a method signature using the current token.
+    fn create_signature(&self, kind: SignatureKind) -> WrenResult<Signature> {
+        let token = self.try_token()?;
+        let fragment = token.fragment(self.lexer.source());
+
+        Signature::new(fragment, kind)
+    }
+
     /// Compile a method signature.
     ///
     /// This is the entry point for all method types. Here we will
@@ -711,25 +771,39 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     ///   foreign static +(other)
     /// }
     /// ```
-    fn compile_signature(&mut self) -> WrenResult<()> {
+    fn compile_signature(&mut self, sig: &mut Signature) -> WrenResult<()> {
         use TokenKind::*;
+        println!("compile_signature {:?}", self.token);
 
-        match self.token.kind() {
-            Some(Name) => { todo!() }
-            Some(Plus) => { todo!() }
-            Some(Minus) => { todo!() }
-            Some(Eq) => { todo!() }
-            Some(LeftBracket) => { todo!() }
+        match self.try_token()?.kind {
+            Name => self.compile_signature_named(sig),
+            Plus => {
+                todo!()
+            }
+            Minus => {
+                todo!()
+            }
+            Eq => {
+                todo!()
+            }
+            LeftBracket => {
+                todo!()
+            }
             _ => panic!("expected method definition"),
         }
     }
 
-    fn compile_signature_named(&mut self) -> WrenResult<()> {
+    /// Getters, setters and named method signatures, with or without parameters.
+    fn compile_signature_named(&mut self, sig: &mut Signature) -> WrenResult<()> {
         debug_assert_eq!(self.token.kind(), Some(TokenKind::Name));
+        println!("compile_signature_named {:?}", self.token);
 
+        sig.kind = SignatureKind::Getter;
+        self.consume_token(TokenKind::Name)?;
 
+        // TODO: Setter
 
-        Ok(())
+        self.compile_method_parameters(sig)
     }
 
     /// Updates the `kind` and `arity` of the given `sig` argument.
@@ -757,7 +831,10 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     }
 
     fn compile_parameter_list(&mut self, sig: &mut Signature) -> WrenResult<()> {
-        debug_assert!(self.scope_depth != ScopeDepth::Module, "parameters must be compiled in a method's scope");
+        debug_assert!(
+            self.scope_depth != ScopeDepth::Module,
+            "parameters must be compiled in a method's scope"
+        );
 
         loop {
             self.ignore_newlines()?;
@@ -1000,6 +1077,7 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         println!("compile_call_signature {:?}", signature);
         let symbol = self
             .method_names
+            .borrow()
             .resolve(signature.name.as_str())
             .ok_or_else(|| WrenError::new_compile(CompileError::SymbolNotFound))?;
         self.emit_op(Op::Call(signature.arity, symbol));
@@ -1063,17 +1141,17 @@ mod test {
     #[test]
     fn test_expr() {
         let module = new_handle(ObjModule::new("main"));
-        let mut method_names = SymbolTable::new();
-        let mut compiler = WrenCompiler::new(module, "return 7", &mut method_names);
+        let method_names = new_handle(SymbolTable::new());
+        let mut compiler = WrenCompiler::new(module, "return 7", method_names);
 
-        let obj_fn = compiler.compile(false).unwrap();
+        let _obj_fn = compiler.compile(false).unwrap();
     }
 
     #[test]
     fn test_var_def() {
         let module = new_handle(ObjModule::new("main"));
-        let mut method_names = SymbolTable::new();
-        let mut compiler = WrenCompiler::new(module, "var x = 7", &mut method_names);
+        let method_names = new_handle(SymbolTable::new());
+        let mut compiler = WrenCompiler::new(module, "var x = 7", method_names);
 
         let obj_fn = compiler.compile(false).unwrap();
         println!("{:?}", obj_fn.borrow().code);
