@@ -11,7 +11,10 @@ use std::convert::Infallible;
 use std::num::NonZeroUsize;
 
 use super::lexer::Lexer;
-use crate::value::{new_handle, Handle, ObjFn, ObjModule, Value};
+use crate::value::{new_handle, Handle, ObjFn, ObjModule, Value, ModuleDump};
+
+/// The name of the local variable that holds the receiver object of the method call.
+pub const RECEIVER_NAME: &str = "this";
 
 pub struct WrenCompiler<'src, 'sym> {
     lexer: Lexer<'src>,
@@ -148,6 +151,27 @@ impl VarId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BlockBodyKind {
+    Empty,
+    Expr,
+    Stmt,
+}
+
+impl BlockBodyKind {
+    fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
+
+    fn is_expression(&self) -> bool {
+        matches!(self, Self::Expr)
+    }
+
+    fn is_statement(&self) -> bool {
+        matches!(self, Self::Stmt)
+    }
+}
+
 impl<'src, 'sym> WrenCompiler<'src, 'sym> {
     pub fn new(module: Handle<ObjModule>, source: &'src str, method_names: Handle<SymbolTable>) -> Self {
         Self {
@@ -177,16 +201,29 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         // We need to retain this state.
         let token = parent.token.clone();
 
+        // Method signatures and bodies are always local scope.
+        let scope_depth = ScopeDepth::Block(NonZeroUsize::new(1).unwrap());
+
+        // This compiler is dedicated to one method, so implicitly
+        // it has a `this` local variable declared.
+        let locals = vec![Local {
+            name: RECEIVER_NAME.to_string(),
+            depth: scope_depth.block_depth(),
+            is_upvalue: false,
+        }];
+
+        let func = Some(ObjFn::new(parent.module.clone()));
+
         Self {
             lexer: parent.lexer.clone(),
             method_names: parent.method_names.clone(),
-            locals: Vec::new(),
+            locals,
             num_slots: 0,
-            scope_depth: ScopeDepth::Block(NonZeroUsize::new(1).unwrap()),
+            scope_depth,
             parent: Some(parent),
             module: parent.module.clone(),
             enclosing_class: None,
-            func: None,
+            func,
             token,
             doc_comments: Vec::new(),
         }
@@ -215,6 +252,10 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         // Mark the end of the bytecode. Since it may contain multiple early returns,
         // we can't rely on Op::Return to tell us we're at the end.
         self.emit_op(Op::End);
+
+        let module = &*self.module.borrow();
+        let dump = ModuleDump::new(module);
+        println!("{dump}");
 
         Ok(new_handle(self.func.take().unwrap()))
     }
@@ -458,6 +499,7 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         use TokenKind::*;
 
         let token = self.try_token()?;
+        println!("compile_def_stmt {:?}", token);
 
         // TODO: Compile attributes starting with hash (#)
 
@@ -621,8 +663,12 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         sub_compiler.compile_signature(&mut sig)?;
 
         // TODO: Parse method body.
-        sub_compiler.consume_token(TokenKind::LeftBrace)?;
-        sub_compiler.consume_token(TokenKind::RightBrace)?;
+        if is_foreign {
+            // Foreign methods may not have bodies
+            // TODO: Finish method compilation
+        } else {
+            sub_compiler.compile_method_body()?;
+        }
 
         // Synchronise this compiler with the progress made by the sub-compiler.
         let WrenCompiler { lexer, token, .. } = sub_compiler;
@@ -630,6 +676,64 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         self.token = token;
 
         Ok(false)
+    }
+
+    fn compile_method_body(&mut self) -> WrenResult<()> {
+        // Possibly empty or an expression body.
+        let block_body_kind = self.compile_block_body()?;
+
+        // TODO: Constructor
+
+        if block_body_kind.is_statement() {
+            // Implicitly return `null` in statement bodies.
+            self.emit_op(Op::PushNull);
+        }
+
+        self.emit_op(Op::Return);
+
+        Ok(())
+    }
+
+    /// Compiles a block body, including the outer braces `{ ... }`.
+    fn compile_block_body(&mut self) -> WrenResult<BlockBodyKind> {
+        debug_assert_eq!(self.token.kind(), Some(TokenKind::LeftBrace));
+
+        self.next_token()?; // {
+        println!("compile_block_body {:?}", self.token);
+
+        // Empty blocks do nothing.
+        if self.match_token(TokenKind::RightBrace)? {
+            return Ok(BlockBodyKind::Empty);
+        }
+
+        // If there's no line after the `{` , it's a single-expression body.
+        if !self.match_token(TokenKind::Newline)? {
+            self.compile_expr()?;
+            self.consume_token(TokenKind::RightBrace)?;
+            println!("compile_block_body [done expr] {:?}", self.token);
+            return Ok(BlockBodyKind::Expr);
+        }
+
+        // Empty blocks only containing newlines do nothing.
+        self.ignore_newlines()?;
+        if self.match_token(TokenKind::RightBrace)? {
+            println!("compile_block_body [done empty] {:?}", self.token);
+            return Ok(BlockBodyKind::Empty);
+        }
+
+        // Block body is made up of definition statements.
+        loop {
+            self.compile_def_stmt()?;
+            self.expect_end()?;
+
+            if self.token.kind() == Some(TokenKind::RightBrace) {
+                break;
+            }
+        }
+        self.consume_token(TokenKind::RightBrace)?;
+
+        println!("compile_block_body [done stmt] {:?}", self.token);
+        Ok(BlockBodyKind::Stmt)
     }
 
     fn compile_foreign(&mut self) -> WrenResult<()> {
@@ -672,17 +776,15 @@ impl<'src, 'sym> WrenCompiler<'src, 'sym> {
         Ok(())
     }
 
-    /// Compile a `return` statement.
+    /// Compile a `return` simple statement.
     fn compile_return(&mut self) -> WrenResult<()> {
         debug_assert_eq!(self.token.keyword(), Some(KeywordKind::Return));
 
         self.next_token()?; // return
 
-        let token = self.try_token()?;
-        match token.kind {
-            TokenKind::Newline => {
+        match self.token.kind() {
+            Some(TokenKind::Newline | TokenKind::End) | None => {
                 // TODO: If there's no expression after return, initializers should return 'this' and regular methods should return null.
-                self.next_token()?;
                 Ok(())
             }
             _ => {
