@@ -15,7 +15,7 @@ fn test_class_def() {
     const SOURCE: &str = r#"
     class Foo {
       bar() {
-        return 7
+        return 7 + 11
       }
     }
     "#;

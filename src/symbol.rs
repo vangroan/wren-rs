@@ -89,4 +89,8 @@ impl SymbolTable {
             .enumerate()
             .map(|(idx, name)| (SymbolId::from_usize(idx), name.as_str()))
     }
+
+    pub fn contains_symbol(&self, symbol: SymbolId) -> bool {
+        symbol.as_usize() < self.symbols.len()
+    }
 }

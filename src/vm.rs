@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Formatter;
 use std::marker::PhantomData;
 
 use crate::compiler::WrenCompiler;
@@ -118,6 +119,9 @@ impl WrenVm {
 
     pub fn interpret(&mut self, module_name: &str, source: &str) -> WrenResult<Value> {
         let closure = new_handle(self.compile_in_module(module_name, source, false)?);
+
+        let vm_dump = VmDump::new(self);
+        println!("{vm_dump}");
 
         for (idx, op) in closure.borrow().func.borrow().code.as_slice().iter().enumerate() {
             println!("{idx:>6}:{op:?}");
@@ -321,6 +325,7 @@ fn run_op_loop(vm: &mut WrenVm, fiber: &mut ObjFiber, frame: &mut CallFrame) -> 
                 fiber.stack.push(constants[id.as_usize()].clone());
             }
             Op::PushNull => fiber.stack.push(Value::Null),
+            Op::PushLocal(_) => todo!(),
             Op::StoreModVar(symbol) => {
                 if let Some(value) = fiber.stack.last() {
                     module.store_var(symbol, value.clone());
@@ -340,12 +345,15 @@ fn run_op_loop(vm: &mut WrenVm, fiber: &mut ObjFiber, frame: &mut CallFrame) -> 
                 save!(frame, pc);
                 return Ok(FuncAction::Return(value));
             }
+            Op::Closure(_constant_id) => todo!("create closure"),
             Op::Class(_field_num) => {
-                todo!()
+                todo!("create class")
             }
             Op::ForeignClass => {
                 todo!()
             }
+            Op::MethodInstance(_) => todo!(),
+            Op::MethodStatic(_) => todo!(),
             Op::EndModule => {
                 fiber.stack.push(Value::Null);
                 vm.last_module = Some(func.module.clone());
@@ -377,6 +385,37 @@ fn call_method(
         Method::FunctionCall => todo!("function call"),
         Method::Foreign => todo!("foreign call"),
         Method::Block => todo!("block call"),
+    }
+}
+
+// ============================================================================
+// Debug
+
+struct VmDump<'a> {
+    vm: &'a WrenVm,
+}
+
+impl<'a> VmDump<'a> {
+    fn new(vm: &'a WrenVm) -> Self {
+        Self { vm }
+    }
+}
+
+impl<'a> std::fmt::Display for VmDump<'a> {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        writeln!(f, "Virtual Machine")?;
+        writeln!(f, "===============")?;
+        writeln!(f, "")?;
+
+        writeln!(f, "Methods")?;
+        writeln!(f, "-------")?;
+
+        for (symbol, name) in self.vm.method_names.borrow().pairs() {
+            let index = symbol.as_u16();
+            writeln!(f, "  {index:>6} {name:?}")?;
+        }
+
+        Ok(())
     }
 }
 

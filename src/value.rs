@@ -1,5 +1,6 @@
 //! Dynamically typed value.
 use std::cell::RefCell;
+use std::fmt::Formatter;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -64,7 +65,7 @@ impl<T> DerefMut for Pointer<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ConstantId(pub(crate) u16);
+pub struct ConstantId(pub(crate) u16);
 
 impl ConstantId {
     pub(crate) fn as_usize(self) -> usize {
@@ -86,6 +87,7 @@ pub enum Value {
     Undefined,
     Num(f64),
     Str(String),
+    Func(Handle<ObjFn>),
     Closure(Handle<ObjClosure>),
     Object,
     Class(Handle<ObjClass>),
@@ -120,11 +122,21 @@ impl Value {
         }
     }
 
+    pub fn is_class(&self) -> bool {
+        matches!(self, Self::Class(_))
+    }
+
     pub fn try_class(&self) -> Result<&Handle<ObjClass>, RuntimeError> {
         match self {
             Self::Class(class) => Ok(class),
             _ => Err(RuntimeError::InvalidType),
         }
+    }
+}
+
+impl From<Handle<ObjFn>> for Value {
+    fn from(func: Handle<ObjFn>) -> Self {
+        Value::Func(func)
     }
 }
 
@@ -302,6 +314,75 @@ impl ObjModule {
     }
 }
 
+/// `ModuleDump` is a debug formatter that will display
+/// the internals of a module object.
+pub(crate) struct ModuleDump<'a> {
+    module: &'a ObjModule,
+}
+
+impl<'a> ModuleDump<'a> {
+    pub(crate) fn new(module: &'a ObjModule) -> Self {
+        Self { module }
+    }
+}
+
+impl<'a> std::fmt::Display for ModuleDump<'a> {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let Self { module } = *self;
+
+        writeln!(f, "{}", module.name)?;
+        for _ in 0..module.name.len() {
+            write!(f, "=")?;
+        }
+        writeln!(f, "")?;
+
+        writeln!(f, "Variables")?;
+        writeln!(f, "---------")?;
+
+        for (symbol, name, value) in module.var_pairs() {
+            let index = symbol.as_u16();
+            writeln!(f, "  {index:>6} {name:<12?}")?;
+        }
+
+        writeln!(f, "Classes")?;
+        writeln!(f, "-------")?;
+
+        let classes = module.var_pairs().filter(|(_, _, value)| value.is_class());
+        for (symbol, name, value) in classes {
+            // " {symbol:?} {name:?}"
+            writeln!(f, " {symbol:?} {name:?}")?;
+
+            let class_handle = value.try_class().cloned().unwrap();
+            let class_obj = class_handle.borrow();
+            write!(f, "class {}", class_obj.name)?;
+
+            match &class_obj.super_class {
+                Some(super_class) => {
+                    writeln!(f, " is {}", super_class.borrow().name)?;
+                }
+                None => writeln!(f, "")?,
+            }
+
+            writeln!(f, "fields")?;
+            // TODO: fields
+
+            writeln!(f, "methods")?;
+            assert!(class_obj.methods.len() < u16::MAX as usize);
+            for (index, maybe_method) in class_obj.methods.iter().enumerate() {
+                if let Some(method) = maybe_method {
+                    writeln!(f, "  {index:>6} {method:?}")?;
+                }
+            }
+
+            writeln!(f, "")?;
+        }
+
+        writeln!(f, "")?;
+
+        Ok(())
+    }
+}
+
 /// Debug information for a function object.
 #[derive(Debug, Default)]
 pub(crate) struct FnDebug {
@@ -310,7 +391,7 @@ pub(crate) struct FnDebug {
 
 // TODO: Make ObjFn immutable, and give Compiler its own mutable function representation.
 #[derive(Debug)]
-pub(crate) struct ObjFn {
+pub struct ObjFn {
     /// TODO: These can become `Box<[Op]>` after compile is complete
     pub(crate) code: Vec<Op>,
     pub(crate) constants: Vec<Value>,

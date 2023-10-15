@@ -74,6 +74,9 @@ pub enum CompileError {
     /// Method reached the maximum parameter count.
     MaxParameters,
     MaxMethodName,
+    /// Class already defined given method.
+    DuplicateMethod(String, String),
+    MaxLocals,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -153,6 +156,8 @@ impl Display for WrenError {
                 CE::InvalidOperator => write!(f, "value does not support operator"),
                 CE::MaxParameters => write!(f, "methods cannot have more than {MAX_PARAMETERS} parameters"),
                 CE::MaxMethodName => write!(f, "method names cannot be longer than {MAX_METHOD_NAME} characters"),
+                CE::DuplicateMethod(cls, sig) => write!(f, "class '{cls}' already defines a method '{sig}'"),
+                CE::MaxLocals => write!(f, "methods cannot have more than {MAX_LOCALS} local variables"),
             },
             EK::Runtime(err) => match err {
                 RE::StackOverflow => write!(f, "stack overflow"),

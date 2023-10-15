@@ -1,3 +1,5 @@
+//! Compiler and VM limitations.
+
 /// The maximum depth that interpolation can nest. For example, this string has
 /// three levels:
 ///
@@ -13,8 +15,13 @@ pub const MAX_CONSTANTS: usize = 1 << 16;
 
 /// The maximum number of module-level variables that may be defined at one time.
 /// This limitation comes from the 16 bits used for the arguments to
-/// `CODE_LOAD_MODULE_VAR` and `CODE_STORE_MODULE_VAR`.
+/// [`Op::LoadModVar`] and [`Op::StoreModVar`].
 pub const MAX_MODULE_VARS: usize = 1 << 16;
+
+/// Maximum number of local variables allowed in a scope.
+///
+/// This limitation comes from the the 8 bits used for [`Op::PushLocal`].
+pub const MAX_LOCALS: usize = 1 << 8;
 
 pub const MAX_SYMBOLS: usize = 1 << 16;
 
