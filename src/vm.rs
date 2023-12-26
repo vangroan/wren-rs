@@ -120,9 +120,6 @@ impl WrenVm {
     pub fn interpret(&mut self, module_name: &str, source: &str) -> WrenResult<Value> {
         let closure = new_handle(self.compile_in_module(module_name, source, false)?);
 
-        let vm_dump = VmDump::new(self);
-        println!("{vm_dump}");
-
         for (idx, op) in closure.borrow().func.borrow().code.as_slice().iter().enumerate() {
             println!("{idx:>6}:{op:?}");
         }
@@ -175,6 +172,10 @@ impl WrenVm {
             Value::Num(_) => core.num_class.clone(),
             _ => todo!("class_by_value"),
         }
+    }
+
+    pub fn vm_dump(&self) -> VmDump {
+        VmDump::new(self)
     }
 }
 
@@ -391,7 +392,7 @@ fn call_method(
 // ============================================================================
 // Debug
 
-struct VmDump<'a> {
+pub struct VmDump<'a> {
     vm: &'a WrenVm,
 }
 
