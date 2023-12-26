@@ -8,6 +8,8 @@ mod limits;
 mod opcode;
 mod primitive;
 mod symbol;
+#[cfg(test)]
+mod tests;
 mod value;
 mod vm;
 

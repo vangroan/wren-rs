@@ -1,6 +1,6 @@
 //! Dynamically typed value.
 use std::cell::RefCell;
-use std::fmt::Formatter;
+use std::fmt::{self, Formatter};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -326,8 +326,8 @@ impl<'a> ModuleDump<'a> {
     }
 }
 
-impl<'a> std::fmt::Display for ModuleDump<'a> {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+impl<'a> fmt::Display for ModuleDump<'a> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let Self { module } = *self;
 
         writeln!(f, "{}", module.name)?;
@@ -390,7 +390,6 @@ pub(crate) struct FnDebug {
 }
 
 // TODO: Make ObjFn immutable, and give Compiler its own mutable function representation.
-#[derive(Debug)]
 pub struct ObjFn {
     /// TODO: These can become `Box<[Op]>` after compile is complete
     pub(crate) code: Vec<Op>,
@@ -442,6 +441,51 @@ impl ObjFn {
     #[inline(always)]
     pub fn get_op(&self, index: usize) -> Op {
         self.code.get(index).cloned().unwrap_or(Op::NoOp)
+    }
+
+    pub fn dump_opcodes(&self) -> OpcodeDump {
+        OpcodeDump { func: self }
+    }
+
+    pub fn dump_constants(&self) -> ConstantDump {
+        ConstantDump { func: self }
+    }
+}
+
+impl fmt::Debug for ObjFn {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        // Circular reference between modules and functions.
+        f.debug_struct("ObjFn")
+            .field("code", &self.code)
+            .field("constants", &self.constants)
+            .field("module", &self.module.borrow().name)
+            .finish_non_exhaustive()
+    }
+}
+
+pub struct OpcodeDump<'a> {
+    func: &'a ObjFn,
+}
+
+impl<'a> fmt::Display for OpcodeDump<'a> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        for (offset, op) in self.func.code.iter().enumerate() {
+            writeln!(f, "{offset:>6} : {op:?}")?;
+        }
+        Ok(())
+    }
+}
+
+pub struct ConstantDump<'a> {
+    func: &'a ObjFn,
+}
+
+impl<'a> fmt::Display for ConstantDump<'a> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        for (id, op) in self.func.constants.iter().enumerate() {
+            writeln!(f, "{id:>6} : {op:?}")?;
+        }
+        Ok(())
     }
 }
 

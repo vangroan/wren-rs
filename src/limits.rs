@@ -23,6 +23,9 @@ pub const MAX_MODULE_VARS: usize = 1 << 16;
 /// This limitation comes from the the 8 bits used for [`Op::PushLocal`].
 pub const MAX_LOCALS: usize = 1 << 8;
 
+/// Maximum number of fields allowed in a class definition.
+pub const MAX_FIELDS: usize = 1 << 8;
+
 pub const MAX_SYMBOLS: usize = 1 << 16;
 
 pub const MAX_VARIABLE_NAME: usize = 64;
@@ -30,3 +33,4 @@ pub const MAX_VARIABLE_NAME: usize = 64;
 pub const MAX_PARAMETERS: usize = 16;
 
 pub const MAX_METHOD_NAME: usize = 64;
+pub const MAX_METHOD_SIGNATURE: usize = MAX_METHOD_NAME + (MAX_PARAMETERS * 2) + 6;

@@ -6,20 +6,40 @@ use crate::error::{CompileError, ErrorKind, WrenError, WrenResult};
 use crate::limits::*;
 use crate::opcode::{Arity, Op};
 use crate::symbol::SymbolTable;
+use crate::value::{new_handle, Handle, ModuleDump, ObjFn, ObjModule, Value};
 use crate::SymbolId;
+
+use arrayvec::ArrayString;
+
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::convert::Infallible;
-use std::fmt::Formatter;
+use std::fmt::{self, Write as _};
+use std::mem;
 use std::num::NonZeroUsize;
+use std::rc::Rc;
 
 use super::lexer::Lexer;
-use crate::value::{new_handle, Handle, ModuleDump, ObjFn, ObjModule, Value};
 
 /// The name of the local variable that holds the receiver object of the method call.
 pub const RECEIVER_NAME: &str = "this";
 
 pub struct WrenCompiler<'src> {
+    /// Lexical analyser.
+    ///
+    /// The lexer is shared so functions on the compiler's stack don't consume
+    /// the same source code.
     lexer: Lexer<'src>,
 
+    /// Method signature table shared with the virtual machine.
+    ///
+    /// All modules in the program share the same table, and a given signature
+    /// must have the same symbol Id throughout the whole program. Modules can then
+    /// call methods on classes from other modules without knowing which function
+    /// it will resolve to.
+    ///
+    /// The method lookups are sort-of "pre-hashed" this way at compiletime. This is
+    /// how Wren manages to avoid looking up functions in hashmaps at runtime.
     method_names: Handle<SymbolTable>,
 
     locals: Vec<Local>,
@@ -62,7 +82,8 @@ pub struct WrenCompiler<'src> {
     enclosing_class: Option<ClassInfo>,
 
     /// The function being compiled.
-    func: Option<ObjFn>,
+    func: FuncState,
+    func_stack: Vec<FuncState>,
 
     /// The last token that was received from the lexer.
     token: Option<Token>,
@@ -71,6 +92,7 @@ pub struct WrenCompiler<'src> {
     doc_comments: Vec<Token>,
 }
 
+/// Local variable.
 #[derive(Debug)]
 struct Local {
     /// The name of the local variable as it appears in source code.
@@ -81,14 +103,22 @@ struct Local {
     /// top level code. One is the scope within that, etc.
     depth: usize,
 
-    /// If this local variable is being used as an upvalue.
+    /// If this local variable is being used as an up-value.
     is_upvalue: bool,
 }
 
 /// Bookkeeping information for compiling a class definition.
 struct ClassInfo {
+    /// The variable (either module-level or local) containing the class object.
+    var: Variable,
     is_foreign: bool,
     name: String,
+
+    /// Table of class fields, built up as they are encountered in method bodies.
+    ///
+    /// Note that in Wren fields are not explicitly defined in the class body,
+    /// like Java or C# would. Instead they are implicitly defined as they are used
+    /// in expressions.
     fields: SymbolTable,
 
     /// Symbols for the methods defined by the class.
@@ -99,6 +129,49 @@ struct ClassInfo {
 
     /// True if the current method being compiled is static.
     in_static: bool,
+
+    /// Class level attribute annotations.
+    attributes: HashMap<String, ()>,
+}
+
+/// Bookkeeping information for compiling a function definition.
+struct FuncState {
+    /// The function object being compiled.
+    func: ObjFn,
+
+    /// Local variables, and up-values, declared in the function.
+    locals: Vec<Local>,
+
+    /// The current number of slots (locals and temporaries) in use.
+    ///
+    /// We use this and maxSlots to track the maximum number of additional slots
+    /// a function may need while executing. When the function is called, the
+    /// fiber will check to ensure its stack has enough room to cover that worst
+    /// case and grow the stack if needed.
+    ///
+    /// This value here doesn't include parameters to the function. Since those
+    /// are already pushed onto the stack by the caller and tracked there, we
+    /// don't need to double count them here.
+    num_slots: usize,
+
+    /// Scope context describes the outer function context of the body currently
+    /// being compiled.
+    ctx: ScopeContext,
+
+    /// If this function is a method this will contain the enclosing class information.
+    enclosing_class: Option<Rc<RefCell<ClassInfo>>>,
+}
+
+impl FuncState {
+    fn new(module: Handle<ObjModule>) -> Self {
+        Self {
+            func: ObjFn::new(module),
+            locals: Vec::new(),
+            num_slots: 0,
+            ctx: ScopeContext::Method,
+            enclosing_class: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -120,13 +193,26 @@ impl ScopeDepth {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ScopeContext {
+    /// The implicit top-level function that acts as the module (or script) body.
+    Module,
+    /// The class body, outside any method bodies.
+    ClassBody,
+    /// A function directly inside a class body.
+    Method,
+    /// An anonymous block function locally inside another function body.
+    Block,
+}
+
+#[derive(Debug, Clone)]
 enum Scope {
     Local,
-    Upvalue,
+    UpValue,
     Module,
 }
 
+#[derive(Debug, Clone)]
 struct Variable {
     id: VarId,
     scope: Scope,
@@ -192,58 +278,19 @@ impl<'src> WrenCompiler<'src> {
             locals: Vec::new(),
             num_slots: 0,
             scope_depth: ScopeDepth::Module,
-            // parent: None,
-            module,
+            module: module.clone(),
             enclosing_class: None,
-            func: None,
+            func: FuncState::new(module.clone()),
+            func_stack: Vec::new(),
             token: None,
-            doc_comments: Vec::new(),
-        }
-    }
-
-    /// Create a sub-compiler for methods.
-    pub(crate) fn new_method(parent: &mut WrenCompiler<'src>) -> Self {
-        // TODO: Declare `this` variable in locals.
-
-        println!("creating sub-compiler");
-        let lexer = parent.lexer.clone();
-        println!("sub-compiler lexer {:?}", lexer.rest());
-
-        // The parent compiler will have already consumed a token from the lexer.
-        // We need to retain this state.
-        let token = parent.token.clone();
-
-        // Method signatures and bodies are always local scope.
-        let scope_depth = ScopeDepth::Block(NonZeroUsize::new(1).unwrap());
-
-        // This compiler is dedicated to one method, so implicitly
-        // it has a `this` local variable declared.
-        let locals = vec![Local {
-            name: RECEIVER_NAME.to_string(),
-            depth: scope_depth.block_depth(),
-            is_upvalue: false,
-        }];
-
-        let func = Some(ObjFn::new(parent.module.clone()));
-
-        Self {
-            lexer: parent.lexer.clone(),
-            method_names: parent.method_names.clone(),
-            locals,
-            num_slots: 0,
-            scope_depth,
-            // parent: Some(parent),
-            module: parent.module.clone(),
-            enclosing_class: None,
-            func,
-            token,
             doc_comments: Vec::new(),
         }
     }
 
     // FIXME: Private ObjFn type in public compile() signature.
     pub(crate) fn compile(mut self, is_expression: bool) -> WrenResult<Handle<ObjFn>> {
-        self.func = Some(ObjFn::new(self.module.clone()));
+        println!("compile");
+        self.func = FuncState::new(self.module.clone());
 
         // Initialise.
         self.next_token()?;
@@ -261,6 +308,8 @@ impl<'src> WrenCompiler<'src> {
     }
 
     fn end_compiler(mut self) -> WrenResult<Handle<ObjFn>> {
+        println!("end_compiler");
+
         // Mark the end of the bytecode. Since it may contain multiple early returns,
         // we can't rely on Op::Return to tell us we're at the end.
         self.emit_op(Op::End);
@@ -269,44 +318,40 @@ impl<'src> WrenCompiler<'src> {
         let dump = ModuleDump::new(module);
         println!("{dump}");
 
-        Ok(new_handle(self.func.take().unwrap()))
+        // Take function state and replace it with a fresh function.
+        let func_state = mem::replace(&mut self.func, FuncState::new(self.module.clone()));
+        let func_handle = new_handle(func_state.func);
+        Ok(func_handle)
     }
 
-    fn end_sub_compiler(&mut self, mut sub_compiler: WrenCompiler<'src>) -> WrenResult<Handle<ObjFn>> {
+    /// End the current function.
+    fn end_func(&mut self) {
+        println!("end_func");
+
         // Mark the end of the bytecode. Since it may contain multiple early returns,
         // we can't rely on Op::Return to tell us we're at the end.
-        sub_compiler.emit_op(Op::End);
+        self.emit_op(Op::End);
 
-        // Synchronise the parent compiler with the progress made by the sub-compiler.
-        let WrenCompiler { lexer, token, func, .. } = sub_compiler;
-        self.lexer = lexer;
-        self.token = token;
+        // Pop the current function and set the previous function to current.
+        let func = self.pop_func_scope();
 
-        let func_handle = func
-            .map(new_handle)
-            .expect("ending a sub-compiler requires that it has a current function");
+        // Unpack function state.
+        let FuncState { func, .. } = func;
 
-        // Load the inner function object into the outer function as a closure.
-        let constant_id = self.func.as_mut().unwrap().intern_constant(func_handle.clone().into());
+        // Function object will now be managed by the VM.
+        let func_handle = new_handle(func);
 
-        // Wrap the function in a closure. We do this even if it has no upvalues so
+        // Load the inner function object into the outer function as a closure object.
+        let constant_id = self.func.func.intern_constant(func_handle.clone().into());
+
+        // Wrap the function in a closure. We do this even if it has no up-values so
         // that the VM can uniformly assume all called objects are closures. This
         // makes creating a function a little slower, but makes invoking them
         // faster. Given that functions are invoked more often than they are
         // created, this is a win.
         self.emit_op(Op::Closure(constant_id));
 
-        // TODO: Emit arguments for each upvalue to know whether to capture a local or an upvalue.
-
-        // Dump inner function bytecode
-        println!("Sub-Compiler Function:");
-        println!("----------------------");
-        for (idx, op) in func_handle.borrow().code.as_slice().iter().enumerate() {
-            println!("{idx:>6}:{op:?}");
-        }
-        println!();
-
-        Ok(func_handle)
+        // TODO: Emit arguments for each up-value.
     }
 
     fn push_scope(&mut self) {
@@ -333,6 +378,58 @@ impl<'src> WrenCompiler<'src> {
                 }
             }
         }
+    }
+
+    /// Pushes a new enclosing class onto the class stack.
+    fn class_scope<R>(&mut self, _func: impl FnOnce(&mut Self) -> WrenResult<R>) {
+        todo!()
+    }
+
+    /// Pushes a new function scope onto the function stack.
+    fn push_func_scope(&mut self, enclosing_class: Option<Rc<RefCell<ClassInfo>>>) {
+        // Implicitly the new function is part of the old function's module.
+        let module = self.func.func.module.clone();
+        let mut new_func = FuncState::new(module);
+        new_func.enclosing_class = enclosing_class;
+        let prev_func = mem::replace(&mut self.func, new_func);
+        self.func_stack.push(prev_func);
+    }
+
+    /// Pop the current function scope, without emitting any constants, variables or opcodes.
+    fn pop_func_scope(&mut self) -> FuncState {
+        let prev_func = self
+            .func_stack
+            .pop()
+            .expect("ending function failed because lexical stack is empty");
+        mem::replace(&mut self.func, prev_func)
+    }
+
+    /// Pushes a new function scope onto the function stack.
+    ///
+    /// Further compilation will emit bytecode, and intern constants, to this newly created function.
+    fn func_scope<R>(&mut self, parselet: impl FnOnce(&mut Self) -> WrenResult<R>) -> WrenResult<(R, FuncState)> {
+        // Implicitly the new function is part of the old function's module.
+        let module = self.func.func.module.clone();
+        let new_func = FuncState::new(module);
+        let prev_func = mem::replace(&mut self.func, new_func);
+        self.func_stack.push(prev_func);
+
+        let result = parselet(self);
+
+        // Take the new function for return, and put the previous function back.
+        let prev_func = self
+            .func_stack
+            .pop()
+            .expect("function stack must contain the previous function at the top");
+        let new_func = mem::replace(&mut self.func, prev_func);
+
+        // Return the newly compiled function so the caller
+        // can decide what to do with it.
+        result.map(|r| (r, new_func))
+    }
+
+    fn parent_func(&self) -> Option<&FuncState> {
+        self.func_stack.last()
     }
 
     fn has_token(&self) -> bool {
@@ -394,7 +491,7 @@ impl<'src> WrenCompiler<'src> {
             self.next_token()?;
             Ok(token)
         } else {
-            panic!("expected {:?}, encountered {:?}", kind, token.kind);
+            // panic!("expected {:?}, encountered {:?}", kind, token.kind);
             Err(WrenError::new_compile(CompileError::UnexpectedToken(kind, token.kind)))
         }
     }
@@ -450,7 +547,7 @@ impl<'src> WrenCompiler<'src> {
     }
 
     /// Check whether the current token terminates a statement.
-    fn expect_end(&mut self) -> WrenResult<()> {
+    fn expect_end_of_statement(&mut self) -> WrenResult<()> {
         match self.token.kind() {
             Some(TokenKind::Newline) | Some(TokenKind::End) | None => {
                 self.next_token()?;
@@ -506,26 +603,28 @@ impl<'src> WrenCompiler<'src> {
         }
     }
 
+    fn signature_symbol(&mut self, sig: &Signature) -> WrenResult<SymbolId> {
+        let mut sig_str = ArrayString::<MAX_METHOD_SIGNATURE>::new();
+        write!(sig_str, "{}", sig).expect("write to signature string");
+        self.method_names.borrow_mut().insert(sig_str.as_str())
+    }
+
     /// Declare a method in the enclosing class info.
     ///
     /// This resolves the symbol in the VM environment, then adds
     /// the symbol to the current enclosing [`ClassInfo`] method table.
-    fn declare_method(&mut self, sig: &Signature) -> WrenResult<SymbolId> {
+    fn declare_method(&mut self, class: &mut ClassInfo, sig: &Signature) -> WrenResult<SymbolId> {
         // Map method signature string to symbol
         let sig_str = sig.to_string();
         let symbol = self.method_names.borrow_mut().insert(sig_str.as_str())?;
 
-        // Check if the outer class already has this method declared.
-        let class = self
-            .enclosing_class
-            .as_mut()
-            .expect("methods must be declared inside a class body");
         let method_symbols = if class.in_static {
             &mut class.static_methods
         } else {
             &mut class.methods
         };
 
+        // Check if the outer class already has this method declared.
         if method_symbols.contains(&symbol) {
             return Err(WrenError::new_compile(CompileError::DuplicateMethod(
                 class.name.to_string(),
@@ -612,7 +711,7 @@ impl<'src> WrenCompiler<'src> {
         // TODO: Compile attributes starting with hash (#)
 
         match token.kind {
-            Keyword(Class) => self.compile_class(),
+            Keyword(Class) => self.compile_class(false),
             Keyword(Foreign) => self.compile_foreign(),
             Keyword(Import) => self.compile_import(),
             Keyword(Var) => self.compile_var_def(),
@@ -629,29 +728,34 @@ impl<'src> WrenCompiler<'src> {
 
         match token.kind {
             Keyword(Return) => self.compile_return(),
-            Keyword(kw) => panic!("unexpected keyword: {kw:?}"),
+            Keyword(kw) => panic!("unexpected keyword: {:?}", kw),
             _ => self.compile_expr(),
         }
     }
 
-    fn compile_class(&mut self) -> WrenResult<()> {
-        debug_assert!(matches!(
-            self.token.keyword(),
-            Some(KeywordKind::Class | KeywordKind::Foreign)
-        ));
+    /// Compile a class definition.
+    ///
+    /// # TODO
+    ///
+    /// - Create a variable to store the class in.
+    /// - Create shared class name value
+    /// - Create class name string to track method duplicates
+    /// - Make a string constant for the name.
+    /// - Load the superclass (if there is one).
+    fn compile_class(&mut self, is_foreign: bool) -> WrenResult<()> {
+        debug_assert!(matches!(self.token.keyword(), Some(KeywordKind::Class)));
 
-        let is_foreign = self.token.keyword() == Some(KeywordKind::Foreign);
-        self.next_token()?; // class or foreign
-
-        if is_foreign {
-            self.consume_token(TokenKind::Keyword(KeywordKind::Class))?;
-        }
+        self.consume_token(TokenKind::Keyword(KeywordKind::Class))?;
 
         println!("rest: {:?}", self.lexer.rest());
         println!("token1 {:?}", self.token);
 
         // --------------------------------------------------------------------
         // Create a variable to store the class in.
+        //
+        // The class itself is a reference object that has to be accessible in the scope
+        // as a variable, to use as a receiver for static method calls, or constructing
+        // an instance object.
         let class_name = self.consume_token(TokenKind::Name)?;
         let class_var = self.declare_variable(&class_name)?;
         let class_name_str = class_name.fragment(self.lexer.source());
@@ -662,45 +766,61 @@ impl<'src> WrenCompiler<'src> {
 
         // --------------------------------------------------------------------
         // Super class
+        //
+        // Load the super class if there is one, else our class
+        // inherits from the built-in `Object` class.
         if self.match_keyword(KeywordKind::Is)? {
+            // Inheriting from a super class allows for an expression
+            // that must evaluate to another class object.
             self.compile_expr_precedence(Precedence::Call)?;
         } else {
-            // load builtin `Object` class variable from core module
+            // load builtin `Object` class variable from core module.
             let obj_class = self.module.borrow().resolve_var("Object").expect("core module must be loaded");
             self.emit_op(Op::LoadModVar(obj_class));
         }
 
         // --------------------------------------------------------------------
         // Number-of-fields argument
-
+        //
         // Store a placeholder for the number of fields argument. We don't know the
         // count until we've compiled all the methods to see which fields are used.
+        //
+        // In Wren a class' fields are not defined in the definition body, but
+        // instead implicitly declared on first usage inside method bodies.
+        //
+        // Not applicable to foreign classes because they don't have fields in Wren memory.
         let mut class_op_index = None;
 
-        // The ForeignClass and Class instructions are expected to pop the super class'
-        // name off the stack, but leave our current class' name on top.
+        // Note: The ForeignClass and Class instructions are expected to pop the super class'
+        //       name off the stack, but leave our current class' name on top.
         if is_foreign {
             self.emit_op(Op::ForeignClass);
         } else {
-            class_op_index = Some(self.emit_placeholder(Op::Class(255)));
+            class_op_index = Some(self.reserve_op(Op::Class(255)));
         }
 
         // --------------------------------------------------------------------
         // Define module variable
-
+        //
         // Store a module-level class definition in the module's variable table.
         //
         // A block local class will be on the stack later.
-        // TODO: Why does this come after the superclass and placeholder?
         if let VarId::Module(symbol) = class_var.id {
-            self.store_mod_var(symbol);
+            self.emit_store_mod_var(symbol);
         }
 
         // --------------------------------------------------------------------
         // Body
+        //
+        // Push a new local scope. Static fields used in methods will be hoisted
+        // into local variables in this scope. Methods that use them will have
+        // up-value referencing them.
         self.push_scope();
 
+        // Shared bookkeeping information for the current class, to be mutated by
+        // whichever method is currently being compiled.
         let class_info = ClassInfo {
+            var: class_var.clone(),
             is_foreign,
             name: class_name_str.to_string(),
 
@@ -714,9 +834,16 @@ impl<'src> WrenCompiler<'src> {
             methods: Vec::new(),
             static_methods: Vec::new(),
             in_static: false,
+
+            // TODO: New attributes feature.
+            attributes: HashMap::new(),
         };
 
-        self.enclosing_class = Some(class_info);
+        // TODO: Take collected attributes in compiler and move them into class.
+
+        // Share the class info between methods using the heap, to avoid
+        // annoying self-borrow constraints with the function stack.
+        let enclosing_class = Rc::new(RefCell::new(class_info));
 
         println!("rest: {:?}", self.lexer.rest());
         println!("token3 {:?}", self.token);
@@ -725,7 +852,7 @@ impl<'src> WrenCompiler<'src> {
 
         while !self.match_token(TokenKind::RightBrace)? {
             println!("compiling method");
-            self.compile_method(&class_var)?;
+            self.compile_method(enclosing_class.clone(), &class_var)?;
 
             // Don't require a newline after the last definition.
             if self.match_token(TokenKind::RightBrace)? {
@@ -742,62 +869,77 @@ impl<'src> WrenCompiler<'src> {
 
         // Update the class instruction with the final number of fields.
         if !is_foreign {
-            let op_index = class_op_index.unwrap();
-            self.patch_op(
-                op_index,
-                Op::Class(self.enclosing_class.as_ref().unwrap().fields.len() as u8),
-            );
+            if let Some(op_index) = class_op_index {
+                let field_count = enclosing_class.borrow().fields.len();
+                if field_count >= MAX_FIELDS {
+                    return Err(WrenError::new_compile(CompileError::MaxFields));
+                }
+                self.patch_op(op_index, Op::Class(field_count as u8));
+            }
         }
 
         self.pop_scope();
-        self.expect_end()?;
+        self.expect_end_of_statement()?;
 
         Ok(())
     }
 
     /// Compile a method definition inside a class body.
-    fn compile_method(&mut self, class_var: &Variable) -> WrenResult<bool> {
+    ///
+    /// - `enclosing_class` The class definition that owns this method.
+    /// - `class_var` A variable (either module level or local) containing the class object.
+    fn compile_method(&mut self, enclosing_class: Rc<RefCell<ClassInfo>>, class_var: &Variable) -> WrenResult<()> {
         println!("compile_method {:?}", self.token);
+
+        let mut class = enclosing_class.borrow_mut();
+
+        // TODO: Compile method attributes.
 
         let is_foreign = self.match_keyword(KeywordKind::Foreign)?;
         let is_static = self.match_keyword(KeywordKind::Static)?;
-        self.enclosing_class.as_mut().unwrap().in_static = is_static;
+        class.in_static = is_static;
 
         // Default the signature to a getter. The simplest method kind?
         let mut sig = self.create_signature(SignatureKind::Getter)?;
 
-        // Create sub-compiler for method's function.
-        // This compiler handles the method signature, body and any nested classes.
-        //
-        // IMPORTANT: The outer compiler `self` must not consume any tokens because
-        //            the two compilers have distinct lexer copies.
-        let mut sub_compiler = WrenCompiler::new_method(self);
-        sub_compiler.compile_signature(&mut sig)?;
+        // Start a new function inside the lexical scope of the current function.
+        self.push_func_scope(Some(enclosing_class.clone()));
+
+        // Compile the method signature.
+        self.compile_signature(&mut sig)?;
 
         // The method symbol must be declared in the enclosing class, after the
         // the signature's arity has been determined.
-        let method_symbol = self.declare_method(&sig)?;
+        let method_symbol = self.declare_method(&mut *class, &sig)?;
 
-        // TODO: Parse method body.
+        // Foreign methods may not have bodies.
         if is_foreign {
-            // Foreign methods may not have bodies
-            // TODO: Finish method compilation
+            // Define a constant for the full signature.
+            self.emit_constant(Value::Str(sig.to_string()));
 
-            // The sub-compiler used for the signature is no longer needed.
-            drop(sub_compiler);
+            // The function scope used to compile the signature is
+            // no longer needed.
+            //
+            // Foreign function has no bytecode or closure object.
+            self.pop_func_scope();
         } else {
-            sub_compiler.compile_method_body()?;
-            let _func = self.end_sub_compiler(sub_compiler)?;
+            self.compile_method_body()?;
+
+            self.end_func();
         }
 
         self.define_method(class_var, method_symbol, is_static)?;
 
-        // Synchronise this compiler with the progress made by the sub-compiler.
-        // let WrenCompiler { lexer, token, .. } = sub_compiler;
-        // self.lexer = lexer;
-        // self.token = token;
+        // When the method is an initializer,
+        // then also define a matching constructor method on the metaclass.
+        if sig.kind == SignatureKind::Initializer {
+            sig.kind = SignatureKind::Method;
+            let _symbol = self.signature_symbol(&sig);
 
-        Ok(false)
+            // TODO: Create constructor
+        }
+
+        Ok(())
     }
 
     /// Compile the body of a method, which can be an expression or
@@ -866,7 +1008,7 @@ impl<'src> WrenCompiler<'src> {
         // Block body is made up of definition statements.
         loop {
             self.compile_def_stmt()?;
-            self.expect_end()?;
+            self.expect_end_of_statement()?;
 
             if self.token.kind() == Some(TokenKind::RightBrace) {
                 break;
@@ -878,8 +1020,13 @@ impl<'src> WrenCompiler<'src> {
         Ok(BlockBodyKind::Stmt)
     }
 
+    /// Compile a foreign class definition.
+    ///
+    /// A foreign class has no fields in Wren,
+    /// because it has a sibling struct in Rust.
     fn compile_foreign(&mut self) -> WrenResult<()> {
-        todo!()
+        self.consume_token(TokenKind::Keyword(KeywordKind::Foreign))?;
+        self.compile_class(true)
     }
 
     fn compile_import(&mut self) -> WrenResult<()> {
@@ -910,11 +1057,11 @@ impl<'src> WrenCompiler<'src> {
         }
 
         // Terminate statement.
-        self.expect_end()?;
+        self.expect_end_of_statement()?;
 
         // Now put the symbol in scope.
         let var = self.declare_variable(&name_token)?;
-        self.store_mod_var(var.id.symbol().unwrap());
+        self.emit_store_mod_var(var.id.symbol().unwrap());
         Ok(())
     }
 
@@ -942,7 +1089,7 @@ impl<'src> WrenCompiler<'src> {
     ///
     /// The value at the top of the stack is copied into the module's variable table,
     /// then the top of the stack is popped.
-    fn store_mod_var(&mut self, symbol: SymbolId) {
+    fn emit_store_mod_var(&mut self, symbol: SymbolId) {
         // Module variables are stored in their own table.
         // The top stack value is temporary.
         self.emit_op(Op::StoreModVar(symbol));
@@ -950,16 +1097,48 @@ impl<'src> WrenCompiler<'src> {
     }
 }
 
-#[derive(Debug)]
+/// Kind of method signature.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum SignatureKind {
+    /// A normal method signature, with a name and parameters.
     Method,
+    /// Method without parameters.
+    ///
+    /// ```wren
+    /// x { _x }
+    /// ```
     Getter,
+    /// Method with an equals after its name.
+    ///
+    /// ```wren
+    /// x=(a) { _x = a }
+    /// ```
     Setter,
+    /// Method with square brackets and no name.
+    ///
+    /// ```wren
+    /// [i] { _data[i] }
+    /// ```
     Subscript,
+    /// Method with square brackets, an equals and parameter list.
+    ///
+    /// ```wren
+    /// [i]=(a) { _data[i] = a }
+    /// ```
     SubscriptSetter,
+    /// Constructor is like a normal method preceded by the `construct` keyword.
+    ///
+    /// ```wren
+    /// construct new(a, b, c) {
+    ///   _a = a
+    ///   _b = b
+    ///   _c = c
+    /// }
+    /// ```
     Initializer,
 }
 
+/// Method signature.
 #[derive(Debug)]
 struct Signature {
     name: String,
@@ -982,8 +1161,8 @@ impl Signature {
     }
 }
 
-impl std::fmt::Display for Signature {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+impl fmt::Display for Signature {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use SignatureKind::*;
 
         let Self { name, kind, arity } = &self;
@@ -1019,7 +1198,8 @@ impl std::fmt::Display for Signature {
                 fmt_param_list(f, 1)?;
                 write!(f, ")")?;
             }
-            // Uses keyword `construct` in Wren script.
+            // Uses keyword `construct` in actual Wren script,
+            // but `init` in the internal signature map.
             Initializer => {
                 write!(f, "init ")?;
                 write!(f, "{name}")?;
@@ -1033,7 +1213,12 @@ impl std::fmt::Display for Signature {
     }
 }
 
-fn fmt_param_list(f: &mut Formatter, num_args: usize) -> std::fmt::Result {
+/// Writes a parameter list to the given formatter.
+///
+/// ```text
+/// num_args(_, 3) -> "_,_,_"
+/// ```
+fn fmt_param_list(f: &mut fmt::Formatter, num_args: usize) -> fmt::Result {
     let num_params = num_args.min(MAX_PARAMETERS);
 
     for i in 0..num_params {
@@ -1109,7 +1294,10 @@ impl<'src> WrenCompiler<'src> {
         sig.kind = SignatureKind::Getter;
         self.consume_token(TokenKind::Name)?;
 
-        // TODO: Setter
+        // Setter
+        if self.match_token(TokenKind::Eq)? {
+            sig.kind = SignatureKind::Setter;
+        }
 
         self.compile_method_parameters(sig)
     }
@@ -1270,8 +1458,8 @@ impl TryFrom<i32> for Precedence {
     }
 }
 
-impl std::fmt::Display for Precedence {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl fmt::Display for Precedence {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         std::fmt::Display::fmt(&self.as_i32(), f)
     }
 }
@@ -1352,7 +1540,7 @@ impl<'src> WrenCompiler<'src> {
         let token = self.try_token()?;
         println!("compile_number_literal {:?}", token);
         let value = token.value.num().unwrap().into();
-        let constant_id = self.func.as_mut().unwrap().intern_constant(value);
+        let constant_id = self.func.func.intern_constant(value);
         self.emit_op(Op::Constant(constant_id));
         self.next_token()?;
         Ok(())
@@ -1393,6 +1581,9 @@ impl<'src> WrenCompiler<'src> {
     }
 }
 
+/// Determine the method signature for the given token.
+///
+/// This is for mapping unary and binary operators to their method calls.
 fn token_method_name(kind: TokenKind) -> Option<&'static str> {
     use TokenKind::*;
     println!("token_method_name({kind:?})");
@@ -1409,41 +1600,37 @@ fn token_method_name(kind: TokenKind) -> Option<&'static str> {
 /// Functions that emit bytecode instructions.
 impl<'src> WrenCompiler<'src> {
     /// Emit the given instruction to the current function.
-    ///
-    /// # Panics
-    ///
-    /// Will panic if there is no current function.
     fn emit_op(&mut self, op: Op) {
-        let func = self.func.as_mut().expect("compiler has no current function");
-        // TODO: Line number from lexer
-        func.push_op(op, 0);
+        self.func.func.push_op(op, 0);
     }
 
-    fn emit_placeholder(&mut self, op: Op) -> usize {
-        let func = self.func.as_mut().expect("compiler has no current function");
-        let index = func.code.len();
-        func.push_op(op, 0);
+    /// Emit an instruction with the intent of replacing it later.
+    ///
+    /// Returns the index in the bytecode where the instruction is located,
+    /// which can be used later in a call to [`Self::patch_op`].
+    fn reserve_op(&mut self, op: Op) -> usize {
+        let index = self.func.func.code.len();
+        self.func.func.push_op(op, 0);
         index
     }
 
+    /// Replace the instruction located at `index` with the given instruction.
     fn patch_op(&mut self, index: usize, op: Op) {
-        let func = self.func.as_mut().expect("compiler has no current function");
-        func.code[index] = op;
+        self.func.func.code[index] = op;
     }
 
     /// Emit an instruction to load the given constant onto the fiber's stack.
     fn emit_constant(&mut self, constant: Value) {
-        let func = self.func.as_mut().expect("compiler has no current function");
-        let constant_id = func.intern_constant(constant);
+        let constant_id = self.func.func.intern_constant(constant);
         // TODO: Line number from lexer
-        func.push_op(Op::Constant(constant_id), 0);
+        self.func.func.push_op(Op::Constant(constant_id), 0);
     }
 
     /// Emit the code to load a variable onto the stack.
     fn emit_load_var(&mut self, var: &Variable) {
         match var.scope {
             Scope::Local => self.emit_op(Op::PushLocal(var.id.local_slot().unwrap())),
-            Scope::Upvalue => {
+            Scope::UpValue => {
                 todo!()
             }
             Scope::Module => {
@@ -1462,7 +1649,7 @@ mod test {
     fn test_expr() {
         let module = new_handle(ObjModule::new("main"));
         let method_names = new_handle(SymbolTable::new());
-        let mut compiler = WrenCompiler::new(module, "return 7", method_names);
+        let compiler = WrenCompiler::new(module, "return 7", method_names);
 
         let _obj_fn = compiler.compile(false).unwrap();
     }
@@ -1471,7 +1658,7 @@ mod test {
     fn test_var_def() {
         let module = new_handle(ObjModule::new("main"));
         let method_names = new_handle(SymbolTable::new());
-        let mut compiler = WrenCompiler::new(module, "var x = 7", method_names);
+        let compiler = WrenCompiler::new(module, "var x = 7", method_names);
 
         let obj_fn = compiler.compile(false).unwrap();
         println!("{:?}", obj_fn.borrow().code);

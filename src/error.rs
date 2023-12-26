@@ -77,6 +77,7 @@ pub enum CompileError {
     /// Class already defined given method.
     DuplicateMethod(String, String),
     MaxLocals,
+    MaxFields,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -158,6 +159,7 @@ impl Display for WrenError {
                 CE::MaxMethodName => write!(f, "method names cannot be longer than {MAX_METHOD_NAME} characters"),
                 CE::DuplicateMethod(cls, sig) => write!(f, "class '{cls}' already defines a method '{sig}'"),
                 CE::MaxLocals => write!(f, "methods cannot have more than {MAX_LOCALS} local variables"),
+                CE::MaxFields => write!(f, "classes cannot have more than {MAX_FIELDS} local variables"),
             },
             EK::Runtime(err) => match err {
                 RE::StackOverflow => write!(f, "stack overflow"),
