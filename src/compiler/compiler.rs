@@ -867,6 +867,10 @@ impl<'src> WrenCompiler<'src> {
         println!("rest: {:?}", self.lexer.rest());
         println!("token4 {:?}", self.token);
 
+        // End the class creation at runtime, to signal the VM
+        // to copy collected attributes to the class object.
+        self.emit_op(Op::EndClass);
+
         // Update the class instruction with the final number of fields.
         if !is_foreign {
             if let Some(op_index) = class_op_index {

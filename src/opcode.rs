@@ -87,6 +87,16 @@ pub enum Op {
     /// string for the name of the class.
     ForeignClass,
 
+    /// Completes the process for creating a new class.
+    ///
+    /// The class attributes instance and the class itself should be on the
+    /// top of the fiber's stack.
+    ///
+    /// This process handles moving the attribute data for a class from
+    /// compile time to runtime, since it now has all the attributes associated
+    /// with a class, including for methods.
+    EndClass,
+
     /// Define a method for symbol [arg]. The class receiving the method is popped
     /// off the stack, then the function defining the body is popped.
     ///
@@ -136,6 +146,7 @@ impl Op {
             Closure(_) => 1,
             Class(_) => -1,
             ForeignClass => -1,
+            EndClass => -2,
             MethodInstance(_) => -2,
             MethodStatic(_) => -2,
             EndModule => 1,

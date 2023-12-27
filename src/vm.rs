@@ -370,6 +370,11 @@ fn run_op_loop(vm: &mut WrenVm, fiber: &mut ObjFiber, frame: &mut CallFrame) -> 
             Op::ForeignClass => {
                 todo!()
             }
+            Op::EndClass => {
+                // TODO: Pop class attributes off stack
+                let _class_obj = fiber.stack.pop().unwrap_or_default();
+                // class_obj.attributes = attributes;
+            }
             Op::MethodInstance(_) => todo!(),
             Op::MethodStatic(_) => todo!(),
             Op::EndModule => {
