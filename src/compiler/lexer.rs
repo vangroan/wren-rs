@@ -18,6 +18,7 @@ macro_rules! lexer_trace {
 }
 
 /// Lexical analyser (tokeniser) for the Wren language.
+#[derive(Clone)]
 pub struct Lexer<'src> {
     /// A cursor tracking the progress of scanning over the source text.
     /// Allows for character look ahead, and keeps track of the UTF-8
@@ -66,6 +67,10 @@ impl<'src> Lexer<'src> {
     #[inline(always)]
     pub fn source(&self) -> &'src str {
         self.cursor.source()
+    }
+
+    pub fn rest(&self) -> &'src str {
+        self.cursor.rest()
     }
 
     /// Primes the lexer to consume the next token.
@@ -1002,5 +1007,15 @@ mod test {
         let token = lexer.next_token().unwrap();
         assert_eq!(token.span, Span::new(9, 15)); // includes quotes
         assert_eq!(token.value.str(), Some(""), "empty lines must be omitted");
+    }
+
+    #[test]
+    fn test_class_def() {
+        let mut lexer = Lexer::from_source(r#"class Foo {}"#);
+
+        assert_eq!(lexer.next_token_tuple(), (Span::new(0, 5), TK::Keyword(KW::Class)));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(6, 3), TK::Name));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(10, 1), TK::LeftBrace));
+        assert_eq!(lexer.next_token_tuple(), (Span::new(11, 1), TK::RightBrace));
     }
 }

@@ -2,11 +2,18 @@
 
 mod builder;
 pub mod compiler;
+mod core;
 mod error;
 mod limits;
+mod opcode;
+mod primitive;
+mod symbol;
+#[cfg(test)]
+mod tests;
+mod value;
 mod vm;
 
-pub use {self::builder::WrenBuilder, self::vm::WrenVm};
+pub use {self::builder::WrenBuilder, self::symbol::SymbolId, self::vm::WrenVm};
 
 /// The version of this Wren implementation.
 ///

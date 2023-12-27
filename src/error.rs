@@ -1,4 +1,5 @@
 //! Error type.
+use crate::compiler::TokenKind;
 use std::fmt::{self, Display, Formatter};
 use std::num::{ParseFloatError, ParseIntError};
 
@@ -15,8 +16,8 @@ pub struct WrenError {
 #[derive(Debug)]
 pub enum ErrorKind {
     Parse(ParseError),
-    Compile,
-    Runtime,
+    Compile(CompileError),
+    Runtime(RuntimeError),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -53,15 +54,66 @@ pub enum ParseError {
     UnexpectedEOF,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum CompileError {
+    MaxSymbols,
+    MaxModuleVariables,
+    /// Scope variable already defined.
+    ScopeVariableExists(String),
+    /// Module variable already defined.
+    ModuleVariableExists(String),
+    /// Forward variable declaration, meaning it was used before it was declared.
+    /// Holds the line number where the usage was recorded.
+    ForwardVariable(String, usize),
+    SymbolExists,
+    SymbolNotFound,
+    /// Encountered an unexpected token kind (expected, actual).
+    UnexpectedToken(TokenKind, TokenKind),
+    UnexpectedEndOfTokens,
+    InvalidOperator,
+    /// Method reached the maximum parameter count.
+    MaxParameters,
+    MaxMethodName,
+    /// Class already defined given method.
+    DuplicateMethod(String, String),
+    MaxLocals,
+    MaxFields,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum RuntimeError {
+    StackOverflow,
+    StackUnderflow,
+    InvalidSlot(u8),
+    InvalidType,
+    MethodNotFound,
+}
+
+impl WrenError {
+    pub(crate) fn new_compile(kind: CompileError) -> Self {
+        Self {
+            kind: ErrorKind::Compile(kind),
+        }
+    }
+
+    pub(crate) fn new_runtime(kind: RuntimeError) -> Self {
+        Self {
+            kind: ErrorKind::Runtime(kind),
+        }
+    }
+}
+
 impl Display for WrenError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        use CompileError as CE;
         use ErrorKind as EK;
         use ParseError as PE;
+        use RuntimeError as RE;
 
         let prefix = match self.kind {
             EK::Parse(_) => "parse",
-            EK::Compile => "compile",
-            EK::Runtime => "runtime",
+            EK::Compile(_) => "compile",
+            EK::Runtime(_) => "runtime",
         };
 
         write!(f, "{prefix} error: ")?;
@@ -87,8 +139,35 @@ impl Display for WrenError {
                 PE::UnexpectedChar => write!(f, "unexpected character"),
                 PE::UnexpectedEOF => write!(f, "unexpected end-of-file"),
             },
-            EK::Compile => write!(f, "todo"),
-            EK::Runtime => write!(f, "todo"),
+            EK::Compile(err) => match err {
+                CE::MaxSymbols => write!(f, "symbol table may only contain {MAX_SYMBOLS} entries"),
+                CE::MaxModuleVariables => write!(f, "module may only contain {MAX_MODULE_VARS} variables"),
+                CE::ScopeVariableExists(name) => write!(f, "scope variable '{name}' already defined"),
+                CE::ModuleVariableExists(name) => write!(f, "module variable '{name}' already defined"),
+                CE::ForwardVariable(name, line) => write!(
+                    f,
+                    "variable '{name}' referenced before this definition (first use at line {line})"
+                ),
+                CE::SymbolExists => write!(f, "symbol already defined"),
+                CE::SymbolNotFound => write!(f, "symbol not found"),
+                CE::UnexpectedToken(expected, actual) => {
+                    write!(f, "expected token '{expected:?}', encountered '{actual:?}'")
+                }
+                CE::UnexpectedEndOfTokens => write!(f, "unexpected end of tokens"),
+                CE::InvalidOperator => write!(f, "value does not support operator"),
+                CE::MaxParameters => write!(f, "methods cannot have more than {MAX_PARAMETERS} parameters"),
+                CE::MaxMethodName => write!(f, "method names cannot be longer than {MAX_METHOD_NAME} characters"),
+                CE::DuplicateMethod(cls, sig) => write!(f, "class '{cls}' already defines a method '{sig}'"),
+                CE::MaxLocals => write!(f, "methods cannot have more than {MAX_LOCALS} local variables"),
+                CE::MaxFields => write!(f, "classes cannot have more than {MAX_FIELDS} local variables"),
+            },
+            EK::Runtime(err) => match err {
+                RE::StackOverflow => write!(f, "stack overflow"),
+                RE::StackUnderflow => write!(f, "stack underflow"),
+                RE::InvalidSlot(slot_id) => write!(f, "invalid slot {slot_id}"),
+                RE::InvalidType => write!(f, "invalid value type"),
+                RE::MethodNotFound => write!(f, "method not found"),
+            },
         }
     }
 }

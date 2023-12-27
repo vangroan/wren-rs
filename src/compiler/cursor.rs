@@ -5,6 +5,7 @@ pub const EOF_CHAR: char = '\0';
 pub const NEWLINE: char = '\n';
 
 /// Controls the position in source code while scanning.
+#[derive(Clone)]
 pub struct Cursor<'src> {
     /// Original source code text.
     source: &'src str,

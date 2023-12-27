@@ -3,14 +3,14 @@
 use super::span::Span;
 use crate::error::ParseError;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Token {
     pub span: Span,
     pub kind: TokenKind,
     pub value: LiteralValue,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LiteralValue {
     None,
     Number(f64),
@@ -120,6 +120,26 @@ impl Token {
     pub fn to_tuple(self) -> (Span, TokenKind) {
         let Self { span, kind, .. } = self;
         (span, kind)
+    }
+}
+
+pub(crate) trait TokenExt {
+    fn kind(&self) -> Option<TokenKind>;
+    fn keyword(&self) -> Option<KeywordKind>;
+}
+
+impl TokenExt for Option<Token> {
+    #[inline(always)]
+    fn kind(&self) -> Option<TokenKind> {
+        self.as_ref().map(|token| token.kind)
+    }
+
+    #[inline(always)]
+    fn keyword(&self) -> Option<KeywordKind> {
+        match self.kind() {
+            Some(TokenKind::Keyword(kw)) => Some(kw),
+            Some(_) | None => None,
+        }
     }
 }
 

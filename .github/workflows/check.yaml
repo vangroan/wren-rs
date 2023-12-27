@@ -28,6 +28,7 @@ jobs:
           RUSTFLAGS: -A warnings
         with:
           command: test
+          args: --features trace_opcodes
 
   lints:
     name: Lints
