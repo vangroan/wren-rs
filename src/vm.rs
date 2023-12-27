@@ -3,8 +3,9 @@ use std::fmt::Formatter;
 use std::marker::PhantomData;
 
 use crate::compiler::WrenCompiler;
-use crate::core::{initialize_core, load_core_module, teardown_core, BuiltIns};
+use crate::core::{get_core_module, initialize_core, load_core_module, teardown_core, BuiltIns};
 use crate::error::{RuntimeError, WrenError, WrenResult};
+use crate::limits::MAX_FIELDS;
 use crate::opcode::Op;
 use crate::symbol::SymbolTable;
 use crate::value::{
@@ -161,6 +162,11 @@ impl WrenVm {
 
     fn get_module(&self, module_name: &str) -> Option<Handle<ObjModule>> {
         self.modules.get(module_name).cloned()
+    }
+
+    /// Retrieve the core module which contains the built-in types.
+    fn core_module(&self) -> &Handle<ObjModule> {
+        get_core_module(self).expect("core module not initialized")
     }
 
     #[inline(always)]
@@ -347,8 +353,19 @@ fn run_op_loop(vm: &mut WrenVm, fiber: &mut ObjFiber, frame: &mut CallFrame) -> 
                 return Ok(FuncAction::Return(value));
             }
             Op::Closure(_constant_id) => todo!("create closure"),
-            Op::Class(_field_num) => {
-                todo!("create class")
+            Op::Class(num_fields) => {
+                let name = fiber.stack.pop().unwrap_or_default();
+                let superclass = fiber.stack.pop().unwrap_or_default();
+                let is_foreign = false;
+
+                let name_str = name.try_str()?;
+                let superclass_handle = superclass.try_class().cloned()?;
+
+                validate_superclass(&*superclass_handle.borrow(), name_str, num_fields, is_foreign)?;
+                let new_class = new_class(vm, superclass_handle, name_str, num_fields, is_foreign)
+                    .map(new_handle)
+                    .map(Value::Class)?;
+                fiber.stack.push(new_class);
             }
             Op::ForeignClass => {
                 todo!()
@@ -389,6 +406,91 @@ fn call_method(
     }
 }
 
+/// Validates that the superclass value is a legal class
+/// to inherit from for user-defined classes.
+///
+/// The built-in primitive methods assume the passed in receiver
+/// argument is of the built-in value types. Passing in an
+/// [`crate::value::ObjInstance`] would cause them to break.
+///
+/// Also checks the constraints on foreign classes.
+fn validate_superclass(
+    superclass: &ObjClass,
+    name: &str,
+    num_fields: u8,
+    is_foreign: bool,
+) -> Result<(), RuntimeError> {
+    // TODO: Check that superclass is not a builtin
+    // TODO: class cannot inherit from foreign class
+    // TODO: foreign class cannot inherit from superclass with fields
+
+    if (num_fields as usize) + (superclass.num_fields as usize) >= MAX_FIELDS {
+        panic!("class '{name}' may not have more than {MAX_FIELDS} fields, including inherited ones")
+    }
+
+    Ok(())
+}
+
+/// Define a new class in the VM.
+fn new_class(
+    vm: &mut WrenVm,
+    superclass: Handle<ObjClass>,
+    name: &str,
+    num_fields: u8,
+    is_foreign: bool,
+) -> Result<ObjClass, RuntimeError> {
+    // Create the metaclass
+    let mut metaclass = ObjClass::new(format!("{name} metaclass"), 0);
+
+    // Both the metaclass' own metaclass and superclass are the built-in class-object.
+    let cls_class = &vm.builtins.as_ref().unwrap().cls_class;
+    metaclass.obj.class = Some(cls_class.clone()); // metaclass
+    bind_superclass(&mut metaclass, cls_class.clone(), false); // superclass
+
+    // Create our new class
+    let mut new_class = ObjClass::new(name, num_fields);
+    new_class.obj.class = Some(new_handle(metaclass));
+    bind_superclass(&mut new_class, superclass, is_foreign);
+
+    Ok(new_class)
+}
+
+fn bind_superclass(subclass: &mut ObjClass, superclass: Handle<ObjClass>, is_foreign: bool) {
+    let superclass_ref = superclass.borrow();
+
+    if !is_foreign {
+        // Include the superclass in the total number of fields,
+        // so fields are inlined later in object instance storage.
+        subclass.num_fields += superclass_ref.num_fields;
+    } else if cfg!(debug) {
+        debug_assert_eq!(
+            superclass_ref.num_fields, 0,
+            "foreign subclass cannot inherit from a superclass with fields"
+        )
+    }
+
+    // Inherit superclass methods.
+    let superclass_method_len = superclass_ref.method_len();
+    subclass.grow_method_table(if superclass_method_len == 0 {
+        0
+    } else {
+        superclass_method_len - 1
+    });
+
+    for (symbol, method) in superclass_ref.iter_methods() {
+        subclass.bind_method(symbol, method.cloned());
+    }
+
+    drop(superclass_ref);
+
+    // Note: In the reference Wren implementation, the superclass is assigned first.
+    // We assign it last to avoid having to unwrap the Option on each call.
+    //
+    // If this function ever changes to return Result, this placement of this
+    // assignment must be reviewed.
+    subclass.super_class = Some(superclass);
+}
+
 // ============================================================================
 // Debug
 
@@ -424,6 +526,10 @@ impl<'a> std::fmt::Display for VmDump<'a> {
 mod test {
     use super::*;
     use crate::value::*;
+
+    fn dummy_primitive_method(vm: &mut WrenVm, args: &[Value]) -> Result<Value, RuntimeError> {
+        unimplemented!("dummy method")
+    }
 
     fn write(_vm: &mut WrenVm, message: &str) {
         println!("{message}");
@@ -520,5 +626,26 @@ mod test {
         let value = vm.interpret("main", "class Foo {}");
         println!("Return value: {value:?}");
         assert!(value.is_ok());
+    }
+
+    #[test]
+    fn test_bind_superclass() {
+        let symbol = SymbolId::new(0);
+
+        let super_class = new_handle(ObjClass::new("Super", 2));
+        super_class
+            .borrow_mut()
+            .bind_method(symbol, Some(Method::PrimitiveValue(dummy_primitive_method)));
+
+        let mut sub_class = ObjClass::new("Sub", 3);
+        bind_superclass(&mut sub_class, super_class, false);
+
+        assert_eq!(sub_class.num_fields, 5, "subclass must include superclass fields");
+
+        let method = sub_class.get_method(symbol).and_then(Method::as_primitive_fn);
+        assert!(
+            method == Some(dummy_primitive_method),
+            "superclass methods must be copied to subclass"
+        );
     }
 }

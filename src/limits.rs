@@ -33,4 +33,4 @@ pub const MAX_VARIABLE_NAME: usize = 64;
 pub const MAX_PARAMETERS: usize = 16;
 
 pub const MAX_METHOD_NAME: usize = 64;
-pub const MAX_METHOD_SIGNATURE: usize = MAX_METHOD_NAME + (MAX_PARAMETERS * 2) + 6;
+pub const MAX_METHOD_SIGNATURE: usize = MAX_METHOD_NAME + (MAX_PARAMETERS * 2) + "()".len() + "init".len();

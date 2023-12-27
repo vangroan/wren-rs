@@ -26,6 +26,12 @@ pub(crate) fn load_core_module(vm: &WrenVm, module: &mut ObjModule) -> WrenResul
     Ok(())
 }
 
+/// Helper to retrieve the core module from the given VM, if it's been initialized
+/// using [`initialize_core()`].
+pub(crate) fn get_core_module(vm: &WrenVm) -> Option<&Handle<ObjModule>> {
+    vm.modules.get(CORE_MODULE_NAME)
+}
+
 pub(crate) struct BuiltIns {
     pub(crate) obj_class: Handle<ObjClass>,
     pub(crate) cls_class: Handle<ObjClass>,
@@ -180,7 +186,7 @@ pub(crate) fn bind_primitive(
     func: PrimitiveFn,
 ) -> WrenResult<()> {
     let symbol_id = vm.method_names.borrow_mut().insert(method_name)?;
-    class_obj.bind_method(symbol_id, Method::PrimitiveValue(func));
+    class_obj.bind_method(symbol_id, Some(Method::PrimitiveValue(func)));
     Ok(())
 }
 

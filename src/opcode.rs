@@ -64,6 +64,8 @@ pub enum Op {
     /// Creates a class. Top of stack is the superclass. Below that is a string for
     /// the name of the class. The `u8` argument is the number of fields in the class.
     ///
+    /// After evaluation, the top of the stack will contain the class reference object.
+    ///
     /// # Examples
     ///
     /// In a simple example where the class does not explicitly inherit a parent,

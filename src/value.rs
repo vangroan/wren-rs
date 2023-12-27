@@ -426,14 +426,11 @@ impl ObjFn {
 
         // Scan the constant table.
         let found_index = self.constants.iter().position(|el| &value == el);
-        let index = match found_index {
-            Some(index) => index,
-            None => {
-                let index = self.constants.len();
-                self.constants.push(value);
-                index
-            }
-        };
+        let index = found_index.unwrap_or_else(|| {
+            let index = self.constants.len();
+            self.constants.push(value);
+            index
+        });
 
         ConstantId(index as u16)
     }
@@ -720,26 +717,35 @@ pub(crate) enum Method {
     Block,
 }
 
+impl Method {
+    pub(crate) fn as_primitive_fn(&self) -> Option<PrimitiveFn> {
+        match *self {
+            Self::PrimitiveValue(primitive_fn) => Some(primitive_fn),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ObjClass {
     pub(crate) obj: Obj,
-    super_class: Option<Handle<ObjClass>>,
+    pub(crate) super_class: Option<Handle<ObjClass>>,
 
     // TODO: Method table can be immutable after compile.
     methods: Vec<Option<Method>>,
 
-    is_foreign: bool,
+    pub(crate) is_foreign: bool,
 
     // The number of fields needed for an instance of this class,
     // including all of its superclass fields.
-    num_fields: u16,
+    pub(crate) num_fields: u8,
 
     // The name of the class.
     name: String,
 }
 
 impl ObjClass {
-    pub(crate) fn new(name: impl ToString, num_fields: u16) -> Self {
+    pub(crate) fn new(name: impl ToString, num_fields: u8) -> Self {
         Self {
             obj: Obj {
                 kind: ObjType::Class,
@@ -754,20 +760,37 @@ impl ObjClass {
     }
 
     /// Grow the method table so it can include the given index.
-    fn grow_method_table(&mut self, index: usize) {
+    pub(crate) fn grow_method_table(&mut self, index: usize) {
         if index >= self.methods.len() {
             self.methods.extend((self.methods.len()..index + 1).map(|_| None));
         }
     }
 
-    pub(crate) fn bind_method(&mut self, symbol_id: SymbolId, method: Method) {
+    #[inline]
+    pub(crate) fn bind_method(&mut self, symbol_id: SymbolId, method: Option<Method>) {
         let index = symbol_id.as_usize();
         self.grow_method_table(index);
-        self.methods[index] = Some(method);
+        self.methods[index] = method;
     }
 
     pub(crate) fn get_method(&self, symbol_id: SymbolId) -> Option<&Method> {
         self.methods.get(symbol_id.as_usize()).map(|opt| opt.as_ref()).flatten()
+    }
+
+    pub(crate) fn iter_methods(&self) -> impl Iterator<Item = (SymbolId, Option<&Method>)> {
+        assert!(
+            self.methods.len() < MAX_SYMBOLS,
+            "method symbols exceed limit {MAX_SYMBOLS}"
+        );
+
+        self.methods
+            .iter()
+            .enumerate()
+            .map(|(index, method)| (SymbolId::new(index as u16), method.as_ref()))
+    }
+
+    pub(crate) fn method_len(&self) -> usize {
+        self.methods.len()
     }
 
     pub(crate) fn bind_super_class(&mut self, super_class: Handle<ObjClass>) {
@@ -801,3 +824,6 @@ impl ObjClass {
         self.super_class = None;
     }
 }
+
+#[derive(Debug)]
+pub struct ObjInstance {}
